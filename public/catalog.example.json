@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ursa-200",
+    "type": "product",
+    "name": "우루사 200mg",
+    "brand": "우루사",
+    "w": 6, "h": 9, "d": 3,
+    "images": {
+      "front": "/images/ursa-200-front.png",
+      "back": "/images/ursa-200-back.png",
+      "left": "/images/ursa-200-left.png",
+      "right": null
+    }
+  },
+  {
+    "id": "imos-poster",
+    "type": "posm",
+    "name": "가정의 달 포스터",
+    "brand": "포스터",
+    "w": 42, "h": 59, "d": 1,
+    "images": {
+      "front": "/images/imos-poster-front.png",
+      "back": null, "left": null, "right": null
+    }
+  }
+]
