@@ -32,10 +32,10 @@ export async function storeGet(key) {
   if (hasSupabase && k && k.id) {
     const { data, error } = await supabase.from(k.table).select("data").eq("id", k.id).maybeSingle();
     if (error || !data) return null;
-    return { value: JSON.stringify(data.data) };
+    return data.data;
   }
   const v = localStorage.getItem(key);
-  return v ? { value: v } : null;
+  return v ? JSON.parse(v) : null;
 }
 
 /* ---------------- set ---------------- */
