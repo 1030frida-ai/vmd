@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { storeList, storeGet, storeSet, storeDel, storeImage, seedIfEmpty, hasCloud } from "./store";
+import VMDMaker from "./VMDMaker.jsx";
 
 /* =========================================================================
    약국 VMD 시뮬레이터 v4
@@ -85,6 +86,7 @@ export default function App() {
         <nav className="tabs">
           <button className={"tab" + (view === "projects" ? " on" : "")} onClick={() => setView("projects")}>프로젝트</button>
           <button className={"tab" + (view === "library" ? " on" : "")} onClick={() => setView("library")}>제품 라이브러리</button>
+          <button className={"tab" + (view === "vmdmaker" ? " on" : "")} onClick={() => setView("vmdmaker")}>VMD 제작</button>
           {active && <button className={"tab" + (view === "editor" ? " on" : "")} onClick={() => setView("editor")}>편집: {active.pharmacy || active.name}</button>}
         </nav>
         {!hasCloud && <span className="warn-pill">로컬 저장 모드 (클라우드 미설정)</span>}
@@ -94,6 +96,7 @@ export default function App() {
         {!loaded && <div className="loading">불러오는 중…</div>}
         {loaded && view === "projects" && <ProjectsView projects={projects} onSave={saveProject} onRemove={removeProject} onOpen={(id) => { setActiveId(id); setView("editor"); }} />}
         {loaded && view === "library" && <LibraryView items={items} onSave={saveItem} onRemove={removeItem} />}
+        {loaded && view === "vmdmaker" && <VMDMaker />}
         {loaded && view === "editor" && active && <EditorView key={active.id} project={active} items={items} onSave={saveProject} goLibrary={() => setView("library")} />}
         {loaded && view === "editor" && !active && <div className="empty">열린 프로젝트가 없음. 프로젝트 탭에서 선택.</div>}
       </main>
@@ -801,6 +804,8 @@ h1,p{margin:0}
 .board.zoom{overflow:hidden;border-radius:5px;box-shadow:var(--shadow)}
 .tier-select{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;background:#fcfdfd;color:var(--ink);font-weight:600;cursor:pointer}
 .tier-select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.vmk-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.vmk-board{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;overflow:auto;display:flex;justify-content:center}
 .topper{position:absolute;left:-2%;width:104%;top:0;background:linear-gradient(180deg,var(--accent),var(--accent-d));border-radius:6px 6px 3px 3px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.18em;font-size:13px;box-shadow:0 6px 12px rgba(11,111,101,.3);z-index:3}
 .frame{position:absolute;left:0;right:0;background:repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(138,109,67,.04) 40px,rgba(138,109,67,.04) 41px),linear-gradient(180deg,#f3ecdd,#e9dec7);border:6px solid var(--wood-edge);border-radius:5px;box-shadow:inset 0 0 30px rgba(138,109,67,.18),var(--shadow);z-index:1}
 .side-dim .frame{background:repeating-linear-gradient(90deg,transparent,transparent 30px,rgba(138,109,67,.05) 30px,rgba(138,109,67,.05) 31px),linear-gradient(180deg,#efe6d4,#e4d8bf)}

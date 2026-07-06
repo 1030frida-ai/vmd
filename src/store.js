@@ -7,9 +7,10 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 
 // key: "vmd:item:<id>" | "vmd:project:<id>"  (prefix는 끝의 id가 빈 문자열)
 function parseKey(key) {
-  const m = key.match(/^vmd:(item|project):(.*)$/s);
+  const m = key.match(/^vmd:(item|project|fixture):(.*)$/s);
   if (!m) return null;
-  return { table: m[1] === "item" ? "items" : "projects", kind: m[1], id: m[2] || null };
+  const table = m[1] === "item" ? "items" : m[1] === "project" ? "projects" : "fixtures";
+  return { table, kind: m[1], id: m[2] || null };
 }
 
 /* ---------------- list ---------------- */
