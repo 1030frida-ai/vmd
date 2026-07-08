@@ -5,12 +5,12 @@ export const hasCloud = hasSupabase;
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
-// key: "vmd:item:<id>" | "vmd:project:<id>"  (prefix는 끝의 id가 빈 문자열)
+// key: "vmd:item:<id>" | "vmd:project:<id>" | "vmd:store:<id>"  (prefix는 끝의 id가 빈 문자열)
 function parseKey(key) {
-  const m = key.match(/^vmd:(item|project|fixture):(.*)$/s);
+  const m = key.match(/^vmd:(item|project|fixture|store):(.*)$/s);
   if (!m) return null;
-  const table = m[1] === "item" ? "items" : m[1] === "project" ? "projects" : "fixtures";
-  return { table, kind: m[1], id: m[2] || null };
+  const TABLE = { item: "items", project: "projects", fixture: "fixtures", store: "stores" };
+  return { table: TABLE[m[1]], kind: m[1], id: m[2] || null };
 }
 
 /* ---------------- list ---------------- */

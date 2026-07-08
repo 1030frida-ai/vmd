@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { storeList, storeGet, storeSet, storeDel, storeImage, seedIfEmpty, hasCloud } from "./store";
-import VMDMaker from "./VMDMaker.jsx";
 
 /* =========================================================================
-   약국 VMD 시뮬레이터 v4
-   - 정면/측면 뷰 전환 (측면: 깊이 방향 진열 수 확인·조절)
-   - 깊이 진열 수(facing)를 정면에 뒤로 쌓인 모습으로 반영
-   - 정면에서 단 높이 안에 제품 세로 적층(아래 제품 윗면에 스냅)
-   - 진열장 규격: 단별 높이 + 간격 높이(선반판 두께) + 하단/헤더 옵션
-   - 제품 라이브러리(공용) + 약국 처별 프로젝트 / 시안 PNG 내보내기
+   약국 VMD 시뮬레이터 v5
+   - 약국(거래처) 폴더 > 프로젝트(신규/업데이트) 계층 구조
+   - 프로젝트별 요청기한/완료기한
+   - 편집기: 확대/축소, 드래그 삭제, 그룹화(Ctrl+G / Ctrl+Shift+G),
+     순서 단축키(Ctrl+]/[ , Ctrl+Shift+]/[), 실행취소/다시실행(5단계),
+     헤더 영역 POSM 드래그 앤 드롭 핏, 우측면 기준 측면 뷰
+   - OTC 라이브러리(제품/POSM 통합 + 버튼)
    - window.storage 영구 저장(미지원 시 세션 메모리)
    ========================================================================= */
 
@@ -47,33 +47,84 @@ function shelfGeom(s) {
 const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = "anonymous"; i.onload = () => res(i); i.onerror = rej; i.src = src; });
 
 const ITEM_KEY = (id) => "vmd:item:" + id;
+const STORE_KEY = (id) => "vmd:store:" + id;
 const PROJ_KEY = (id) => "vmd:project:" + id;
+
+/* =========================================================================
+   실행취소/다시실행 (최대 5단계)
+   ========================================================================= */
+function useHistory(limit = 5) {
+  const undoStack = useRef([]);
+  const redoStack = useRef([]);
+  const [, force] = useState(0);
+  const bump = () => force((x) => x + 1);
+  const snap = (doc) => JSON.parse(JSON.stringify(doc));
+  const push = (prevDoc) => {
+    undoStack.current = [...undoStack.current, snap(prevDoc)].slice(-limit);
+    redoStack.current = [];
+    bump();
+  };
+  const canUndo = () => undoStack.current.length > 0;
+  const canRedo = () => redoStack.current.length > 0;
+  const doUndo = (currentDoc, apply) => {
+    if (!undoStack.current.length) return;
+    const prev = undoStack.current[undoStack.current.length - 1];
+    undoStack.current = undoStack.current.slice(0, -1);
+    redoStack.current = [...redoStack.current, snap(currentDoc)].slice(-limit);
+    apply(prev); bump();
+  };
+  const doRedo = (currentDoc, apply) => {
+    if (!redoStack.current.length) return;
+    const next = redoStack.current[redoStack.current.length - 1];
+    redoStack.current = redoStack.current.slice(0, -1);
+    undoStack.current = [...undoStack.current, snap(currentDoc)].slice(-limit);
+    apply(next); bump();
+  };
+  return { push, doUndo, doRedo, canUndo, canRedo };
+}
 
 /* =========================================================================
    루트
    ========================================================================= */
 export default function App() {
-  const [view, setView] = useState("projects");
+  const [view, setView] = useState("stores"); // stores | projects | library | editor
   const [items, setItems] = useState([]);
+  const [stores, setStores] = useState([]);
   const [projects, setProjects] = useState([]);
-  const [activeId, setActiveId] = useState(null);
+  const [activeStoreId, setActiveStoreId] = useState(null);
+  const [activeProjectId, setActiveProjectId] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     (async () => {
       await seedIfEmpty();
       const its = (await Promise.all((await storeList("vmd:item:")).map(storeGet))).filter(Boolean);
+      const sts = (await Promise.all((await storeList("vmd:store:")).map(storeGet))).filter(Boolean);
       const prs = (await Promise.all((await storeList("vmd:project:")).map(storeGet))).filter(Boolean);
-      setItems(its); setProjects(prs); setLoaded(true);
+      setItems(its); setStores(sts); setProjects(prs); setLoaded(true);
     })();
   }, []);
 
   const saveItem = useCallback((it) => { setItems((p) => { const i = p.findIndex((x) => x.id === it.id); return i < 0 ? [...p, it] : p.map((x) => x.id === it.id ? it : x); }); storeSet(ITEM_KEY(it.id), it); }, []);
   const removeItem = useCallback((id) => { setItems((p) => p.filter((x) => x.id !== id)); storeDel(ITEM_KEY(id)); }, []);
-  const saveProject = useCallback((p) => { setProjects((prev) => { const i = prev.findIndex((x) => x.id === p.id); return i < 0 ? [...prev, p] : prev.map((x) => x.id === p.id ? p : x); }); storeSet(PROJ_KEY(p.id), p); }, []);
-  const removeProject = useCallback((id) => { setProjects((p) => p.filter((x) => x.id !== id)); storeDel(PROJ_KEY(id)); setActiveId((a) => a === id ? null : a); }, []);
 
-  const active = projects.find((p) => p.id === activeId) || null;
+  const saveStore = useCallback((s) => { setStores((prev) => { const i = prev.findIndex((x) => x.id === s.id); return i < 0 ? [...prev, s] : prev.map((x) => x.id === s.id ? s : x); }); storeSet(STORE_KEY(s.id), s); }, []);
+  const removeStore = useCallback((id) => {
+    setStores((p) => p.filter((x) => x.id !== id)); storeDel(STORE_KEY(id));
+    setProjects((prev) => { const rest = prev.filter((x) => x.storeId !== id); prev.filter((x) => x.storeId === id).forEach((x) => storeDel(PROJ_KEY(x.id))); return rest; });
+    setActiveStoreId((a) => a === id ? null : a);
+  }, []);
+
+  const saveProject = useCallback((p) => { setProjects((prev) => { const i = prev.findIndex((x) => x.id === p.id); return i < 0 ? [...prev, p] : prev.map((x) => x.id === p.id ? p : x); }); storeSet(PROJ_KEY(p.id), p); }, []);
+  const removeProject = useCallback((id) => { setProjects((p) => p.filter((x) => x.id !== id)); storeDel(PROJ_KEY(id)); setActiveProjectId((a) => a === id ? null : a); }, []);
+
+  const activeStore = stores.find((s) => s.id === activeStoreId) || null;
+  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
+
+  const openStore = (id) => { setActiveStoreId(id); setView("projects"); };
+  const openProject = (id) => { const pr = projects.find((x) => x.id === id); if (pr) setActiveStoreId(pr.storeId); setActiveProjectId(id); setView("editor"); };
+  const goStores = () => { setView("stores"); setActiveStoreId(null); setActiveProjectId(null); };
+  const goProjects = () => { setView("projects"); setActiveProjectId(null); };
 
   return (
     <div className="vmd-root">
@@ -81,24 +132,24 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <span className="logo-dot" />
-          <div><div className="brand-title">약국 VMD 시뮬레이터</div><div className="brand-sub">진열장 규격에 맞춰 매대를 꾸며보는 도구</div></div>
+          <div><div className="brand-title">약국 VMD 시뮬레이터</div><div className="brand-sub">약국별 폴더에 진열 시안을 쌓아가는 도구</div></div>
         </div>
         <nav className="tabs">
-          <button className={"tab" + (view === "projects" ? " on" : "")} onClick={() => setView("projects")}>프로젝트</button>
-          <button className={"tab" + (view === "library" ? " on" : "")} onClick={() => setView("library")}>제품 라이브러리</button>
-          <button className={"tab" + (view === "vmdmaker" ? " on" : "")} onClick={() => setView("vmdmaker")}>VMD 제작</button>
-          {active && <button className={"tab" + (view === "editor" ? " on" : "")} onClick={() => setView("editor")}>편집: {active.pharmacy || active.name}</button>}
+          <button className={"tab" + ((view === "stores" || view === "projects") ? " on" : "")} onClick={goStores}>프로젝트</button>
+          <button className={"tab" + (view === "library" ? " on" : "")} onClick={() => setView("library")}>OTC 라이브러리</button>
+          {activeProject && <button className={"tab" + (view === "editor" ? " on" : "")} onClick={() => setView("editor")}>편집: {activeProject.name || "제목 없음"}</button>}
         </nav>
         {!hasCloud && <span className="warn-pill">로컬 저장 모드 (클라우드 미설정)</span>}
       </header>
 
       <main className="stage">
         {!loaded && <div className="loading">불러오는 중…</div>}
-        {loaded && view === "projects" && <ProjectsView projects={projects} onSave={saveProject} onRemove={removeProject} onOpen={(id) => { setActiveId(id); setView("editor"); }} />}
+        {loaded && view === "stores" && <StoresView stores={stores} projects={projects} onSave={saveStore} onRemove={removeStore} onOpen={openStore} />}
+        {loaded && view === "projects" && activeStore && <ProjectsView store={activeStore} projects={projects.filter((p) => p.storeId === activeStore.id)} onSave={saveProject} onRemove={removeProject} onOpen={openProject} onBack={goStores} />}
+        {loaded && view === "projects" && !activeStore && <div className="empty">약국을 먼저 선택하세요.</div>}
         {loaded && view === "library" && <LibraryView items={items} onSave={saveItem} onRemove={removeItem} />}
-        {loaded && view === "vmdmaker" && <VMDMaker />}
-        {loaded && view === "editor" && active && <EditorView key={active.id} project={active} items={items} onSave={saveProject} goLibrary={() => setView("library")} />}
-        {loaded && view === "editor" && !active && <div className="empty">열린 프로젝트가 없음. 프로젝트 탭에서 선택.</div>}
+        {loaded && view === "editor" && activeProject && <EditorView key={activeProject.id} project={activeProject} items={items} onSave={saveProject} goLibrary={() => setView("library")} goProjects={goProjects} />}
+        {loaded && view === "editor" && !activeProject && <div className="empty">열린 프로젝트가 없음. 프로젝트 탭에서 선택.</div>}
       </main>
     </div>
   );
@@ -146,36 +197,93 @@ function ShelfFields({ shelf, set }) {
 }
 
 /* =========================================================================
-   프로젝트 목록 / 생성
+   약국(거래처) 폴더 목록
    ========================================================================= */
-function ProjectsView({ projects, onSave, onRemove, onOpen }) {
+function StoresView({ stores, projects, onSave, onRemove, onOpen }) {
   const [form, setForm] = useState(null);
-  const newDraft = () => ({ id: uid(), name: "", pharmacy: "", memo: "", shelf: normShelf({ w: 90, d: 35, tiers: 5, uniformH: 30, boardH: 3 }), placements: [] });
+  const newDraft = () => ({ id: uid(), name: "", code: "", memo: "" });
 
   return (
     <div className="page">
       <div className="page-head">
-        <div><h1 className="h1">프로젝트</h1><p className="muted">약국 처별로 하나씩. 각 처가 요청한 진열장 규격을 등록.</p></div>
+        <div><h1 className="h1">프로젝트</h1><p className="muted">약국(거래처) 폴더를 먼저 만들고, 그 안에 진행한 VMD를 계속 쌓아갑니다.</p></div>
+        {!form && <button className="btn primary" onClick={() => setForm(newDraft())}>+ 새 약국</button>}
+      </div>
+
+      {form && (
+        <div className="card form-card">
+          <div className="grid2">
+            <Field label="약국명"><input className="inp" value={form.name} placeholder="예) OO온누리약국" onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <Field label="거래처코드"><input className="inp" value={form.code} placeholder="예) A12345" onChange={(e) => setForm({ ...form, code: e.target.value })} /></Field>
+          </div>
+          <Field label="메모 (선택)"><input className="inp" value={form.memo} placeholder="비고" onChange={(e) => setForm({ ...form, memo: e.target.value })} /></Field>
+          <div className="row-end">
+            <button className="btn ghost" onClick={() => setForm(null)}>취소</button>
+            <button className="btn primary" disabled={!form.name} onClick={() => { onSave(form); setForm(null); }}>만들기</button>
+          </div>
+        </div>
+      )}
+
+      {stores.length === 0 && !form && <div className="empty">등록된 약국이 없음. 새 약국 폴더를 만들어 시작하기.</div>}
+
+      <div className="proj-grid">
+        {stores.map((s) => {
+          const cnt = projects.filter((p) => p.storeId === s.id).length;
+          return (
+            <div className="card proj-card store-card" key={s.id}>
+              <div className="store-icon">📁</div>
+              <div className="proj-body">
+                <div className="proj-name">{s.name || "(이름 없음)"}</div>
+                <div className="muted sm">{s.code ? `거래처코드 ${s.code}` : "거래처코드 미입력"}</div>
+                <div className="spec-chip">VMD {cnt}건</div>
+              </div>
+              <div className="proj-actions">
+                <button className="btn primary sm" onClick={() => onOpen(s.id)}>열기</button>
+                <button className="btn danger-ghost sm" onClick={() => { if (confirm("이 약국 폴더와 하위 프로젝트를 모두 삭제할까요?")) onRemove(s.id); }}>삭제</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   프로젝트 목록 (약국 폴더 내부)
+   ========================================================================= */
+function ProjectsView({ store, projects, onSave, onRemove, onOpen, onBack }) {
+  const [form, setForm] = useState(null);
+  const newDraft = () => ({ id: uid(), storeId: store.id, name: "", requestDate: "", dueDate: "", memo: "", shelf: normShelf({ w: 90, d: 35, tiers: 5, uniformH: 30, boardH: 3 }), placements: [] });
+
+  return (
+    <div className="page">
+      <button className="link-btn back-link" onClick={onBack}>← 약국 목록</button>
+      <div className="page-head">
+        <div><h1 className="h1">{store.name || "(이름 없음)"}</h1><p className="muted">{store.code ? `거래처코드 ${store.code} · ` : ""}이 약국에서 진행한 VMD 프로젝트 (신규/업데이트 모두 여기 쌓입니다)</p></div>
         {!form && <button className="btn primary" onClick={() => setForm(newDraft())}>+ 새 프로젝트</button>}
       </div>
 
       {form && (
         <div className="card form-card">
           <div className="grid2">
-            <Field label="약국명 (처)"><input className="inp" value={form.pharmacy} placeholder="예) OO온누리약국" onChange={(e) => setForm({ ...form, pharmacy: e.target.value })} /></Field>
-            <Field label="프로젝트명 (선택)"><input className="inp" value={form.name} placeholder="예) 2026 가정의 달 매대" onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <Field label="프로젝트명"><input className="inp" value={form.name} placeholder="예) 2026 가정의 달 매대" onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+            <Field label="메모 (선택)"><input className="inp" value={form.memo} placeholder="요청 사항, 입점 조건 등" onChange={(e) => setForm({ ...form, memo: e.target.value })} /></Field>
+          </div>
+          <div className="grid2">
+            <Field label="요청기한"><input className="inp" type="date" value={form.requestDate} onChange={(e) => setForm({ ...form, requestDate: e.target.value })} /></Field>
+            <Field label="완료기한"><input className="inp" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} /></Field>
           </div>
           <div className="sub-label">진열장 규격</div>
           <ShelfFields shelf={form.shelf} set={(sh) => setForm({ ...form, shelf: sh })} />
-          <Field label="메모 (선택)"><input className="inp" value={form.memo} placeholder="요청 사항, 입점 조건 등" onChange={(e) => setForm({ ...form, memo: e.target.value })} /></Field>
           <div className="row-end">
             <button className="btn ghost" onClick={() => setForm(null)}>취소</button>
-            <button className="btn primary" disabled={!form.pharmacy && !form.name} onClick={() => { onSave(form); setForm(null); }}>만들기</button>
+            <button className="btn primary" disabled={!form.name} onClick={() => { onSave(form); setForm(null); }}>만들기</button>
           </div>
         </div>
       )}
 
-      {projects.length === 0 && !form && <div className="empty">등록된 프로젝트가 없음. 새 프로젝트로 약국 진열장을 만들기.</div>}
+      {projects.length === 0 && !form && <div className="empty">등록된 프로젝트가 없음. 새 프로젝트로 시작하기.</div>}
 
       <div className="proj-grid">
         {projects.map((p) => {
@@ -184,8 +292,8 @@ function ProjectsView({ projects, onSave, onRemove, onOpen }) {
             <div className="card proj-card" key={p.id}>
               <div className="proj-mini"><MiniShelf shelf={sh} count={p.placements?.length || 0} /></div>
               <div className="proj-body">
-                <div className="proj-name">{p.pharmacy || "(처 미입력)"}</div>
-                <div className="muted sm">{p.name || "—"}</div>
+                <div className="proj-name">{p.name || "(제목 없음)"}</div>
+                <div className="muted sm">{[p.requestDate && `요청 ${p.requestDate}`, p.dueDate && `완료 ${p.dueDate}`].filter(Boolean).join(" · ") || "기한 미입력"}</div>
                 <div className="spec-chip">{g.w}×{Math.round(g.totalH)}×{g.d}cm · {sh.tiers}단{sh.hasHeader ? " · 헤더" : ""}{sh.hasBottom ? " · 하단" : ""}</div>
               </div>
               <div className="proj-actions">
@@ -222,21 +330,21 @@ function MiniShelf({ shelf, count }) {
 }
 
 /* =========================================================================
-   제품 라이브러리
+   OTC 라이브러리
    ========================================================================= */
 function LibraryView({ items, onSave, onRemove }) {
   const [edit, setEdit] = useState(null);
   const [tab, setTab] = useState("product");
   const [q, setQ] = useState("");
-  const blank = (type) => ({ id: uid(), type, name: "", brand: "", w: 6, h: 9, d: 3, images: { front: null, back: null, left: null, right: null } });
+  const blank = () => ({ id: uid(), type: "product", name: "", brand: "", w: 6, h: 9, d: 3, images: { front: null, back: null, left: null, right: null } });
   const dup = (it) => onSave({ ...it, id: uid(), name: (it.name || (it.type === "posm" ? "POSM" : "제품")) + " 사본", images: { ...it.images } });
   const shown = items.filter((i) => i.type === tab).filter((it) => { const s = q.trim().toLowerCase(); return !s || (it.name || "").toLowerCase().includes(s) || (it.brand || "").toLowerCase().includes(s); });
 
   return (
     <div className="page">
       <div className="page-head">
-        <div><h1 className="h1">제품 라이브러리</h1><p className="muted">규격과 면별 이미지를 등록해두면 모든 프로젝트에서 재사용.</p></div>
-        {!edit && <div className="row"><button className="btn ghost" onClick={() => setEdit(blank("posm"))}>+ POSM</button><button className="btn primary" onClick={() => setEdit(blank("product"))}>+ 제품</button></div>}
+        <div><h1 className="h1">OTC 라이브러리</h1><p className="muted">규격과 면별 이미지를 등록해두면 모든 프로젝트에서 재사용. + 버튼 안에서 제품/POSM을 구분해 입력합니다.</p></div>
+        {!edit && <button className="btn primary" onClick={() => setEdit(blank())}>+ 추가</button>}
       </div>
       {edit && <ItemEditor draft={edit} onCancel={() => setEdit(null)} onSave={(it) => { onSave(it); setEdit(null); }} />}
       {!edit && (
@@ -248,13 +356,13 @@ function LibraryView({ items, onSave, onRemove }) {
             </div>
             <input className="inp sm lib-search" placeholder="이름·브랜드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          {shown.length === 0 && <div className="empty">{q ? "검색 결과 없음." : `${tab === "product" ? "제품" : "POSM"}이 없음. 위 버튼으로 추가.`}</div>}
+          {shown.length === 0 && <div className="empty">{q ? "검색 결과 없음." : `${tab === "product" ? "제품" : "POSM"}이 없음. 위 + 버튼으로 추가.`}</div>}
           <div className="lib-grid">
             {shown.map((it) => (
               <div className="card lib-card" key={it.id}>
                 <div className="lib-thumb">{it.images?.front ? <img src={it.images.front} alt={it.name} /> : <div className="thumb-ph">{it.name?.slice(0, 4) || "?"}</div>}</div>
                 <div className="lib-name">{it.name || "(이름 없음)"}</div>
-                <div className="muted sm">{it.brand || (it.type === "posm" ? "POSM" : "제품")} · {it.w}×{it.h}×{it.d}cm</div>
+                <div className="muted sm">{it.type === "posm" ? "POSM" : "제품"}{it.brand ? ` · ${it.brand}` : ""} · {it.w}×{it.h}×{it.d}cm</div>
                 <div className="row-end gap6">
                   <button className="btn ghost sm" onClick={() => setEdit({ ...it, images: { ...it.images } })}>수정</button>
                   <button className="btn ghost sm" onClick={() => dup(it)}>사본</button>
@@ -274,6 +382,11 @@ function ItemEditor({ draft, onCancel, onSave }) {
   const setImg = async (face, file) => { if (!file) return; try { const url = await storeImage(file); setD((p) => ({ ...p, images: { ...p.images, [face]: url } })); } catch { alert("이미지를 불러오지 못했습니다."); } };
   return (
     <div className="card form-card">
+      <div className="sub-label">구분</div>
+      <div className="seg sm" style={{ marginBottom: 16 }}>
+        <button type="button" className={"seg-btn" + (d.type === "product" ? " on" : "")} onClick={() => setD({ ...d, type: "product" })}>제품</button>
+        <button type="button" className={"seg-btn" + (d.type === "posm" ? " on" : "")} onClick={() => setD({ ...d, type: "posm" })}>POSM</button>
+      </div>
       <div className="grid2">
         <Field label={d.type === "posm" ? "POSM 이름" : "제품명"}><input className="inp" value={d.name} placeholder={d.type === "posm" ? "예) 가정의 달 포스터" : "예) 우루사 정"} onChange={(e) => setD({ ...d, name: e.target.value })} /></Field>
         <Field label={d.type === "posm" ? "구분 (선택)" : "브랜드 (선택)"}><input className="inp" value={d.brand} placeholder={d.type === "posm" ? "포스터 / 웨블러 / 쇼카드" : "예) 우루사"} onChange={(e) => setD({ ...d, brand: e.target.value })} /></Field>
@@ -308,9 +421,10 @@ function ItemEditor({ draft, onCancel, onSave }) {
 /* =========================================================================
    에디터 (시뮬레이터)
    ========================================================================= */
-function EditorView({ project, items, onSave, goLibrary }) {
-  const [shelf, setShelf] = useState(normShelf(project.shelf));
-  const [placements, setPlacements] = useState((project.placements || []).map((p) => ({ depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, ...p })));
+function EditorView({ project, items, onSave, goLibrary, goProjects }) {
+  const [meta, setMeta] = useState({ name: project.name || "", requestDate: project.requestDate || "", dueDate: project.dueDate || "", memo: project.memo || "" });
+  const [shelf, setShelfRaw] = useState(normShelf(project.shelf));
+  const [placements, setPlacementsRaw] = useState((project.placements || []).map((p) => ({ depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false, ...p })));
   const [selIds, setSelIds] = useState([]);
   const [paletteTab, setPaletteTab] = useState("product");
   const [snap, setSnap] = useState(true);
@@ -318,10 +432,12 @@ function EditorView({ project, items, onSave, goLibrary }) {
   const [focusTier, setFocusTier] = useState(null);
   const [palQuery, setPalQuery] = useState("");
   const [marquee, setMarquee] = useState(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
   const boardRef = useRef(null);
   const [boardW, setBoardW] = useState(720);
   const [busy, setBusy] = useState(false);
   const dragRef = useRef(null);
+  const hist = useHistory(5);
 
   const itemsById = Object.fromEntries(items.map((i) => [i.id, i]));
   const g = shelfGeom(shelf);
@@ -332,7 +448,13 @@ function EditorView({ project, items, onSave, goLibrary }) {
   const vpTop = ft != null ? (ft < g.tiers - 1 ? g.boards[ft + 1].bottom : g.mainTop) : g.totalH;
   const vpH = Math.max(1, vpTop - vpBot);
   const maxH = 540;
-  const ppc = Math.max(1.1, Math.min((boardW - 8) / Math.max(1, viewW), maxH / Math.max(1, vpH)));
+  const ppcBase = Math.max(1.1, Math.min((boardW - 8) / Math.max(1, viewW), maxH / Math.max(1, vpH)));
+  const ppc = ppcBase * zoomLevel;
+
+  const curDoc = () => ({ shelf, placements });
+  const applyDoc = (dcmt) => { setShelfRaw(dcmt.shelf); setPlacementsRaw(dcmt.placements); };
+  const setPlacements = (updater, record = true) => { if (record) hist.push(curDoc()); setPlacementsRaw(updater); };
+  const setShelf = (nextShelf, record = true) => { if (record) hist.push(curDoc()); setShelfRaw(nextShelf); };
 
   const frontW = (it, face) => (face === "front" || face === "back") ? num(it.w) : num(it.d);
   const blockW = (it, face, col) => frontW(it, face) * Math.max(1, col || 1);
@@ -349,7 +471,60 @@ function EditorView({ project, items, onSave, goLibrary }) {
     if (boardRef.current) ro.observe(boardRef.current);
     return () => ro.disconnect();
   }, []);
-  useEffect(() => { const t = setTimeout(() => onSave({ ...project, shelf, placements }), 300); return () => clearTimeout(t); }, [shelf, placements]); // eslint-disable-line
+  useEffect(() => { const t = setTimeout(() => onSave({ ...project, ...meta, shelf, placements }), 300); return () => clearTimeout(t); }, [shelf, placements, meta]); // eslint-disable-line
+
+  const doSaveNow = () => onSave({ ...project, ...meta, shelf, placements });
+
+  const groupMembers = (id, currentSel) => {
+    if (currentSel.includes(id) && currentSel.length > 1) return currentSel;
+    const p = placements.find((x) => x.id === id);
+    if (p?.groupId) return placements.filter((x) => x.groupId === p.groupId).map((x) => x.id);
+    return [id];
+  };
+  const selectWithGroup = (id) => {
+    const p = placements.find((x) => x.id === id);
+    if (p?.groupId) setSelIds(placements.filter((x) => x.groupId === p.groupId).map((x) => x.id));
+    else setSelIds([id]);
+  };
+  const groupSel = () => {
+    if (selIds.length < 2) return;
+    const gid = uid();
+    setPlacements((ps) => ps.map((p) => selIds.includes(p.id) ? { ...p, groupId: gid } : p));
+  };
+  const ungroupSel = () => {
+    if (!selIds.length) return;
+    const gids = new Set(placements.filter((p) => selIds.includes(p.id) && p.groupId).map((p) => p.groupId));
+    if (!gids.size) return;
+    setPlacements((ps) => ps.map((p) => (p.groupId && gids.has(p.groupId)) ? { ...p, groupId: null } : p));
+  };
+
+  const bulkZ = (mode) => {
+    if (!selIds.length) return;
+    const sorted = [...placements].sort((a, b) => b.z - a.z);
+    let order = sorted.map((p) => p.id);
+    const selSet = new Set(selIds);
+    if (mode === "top") { const sel = order.filter((id) => selSet.has(id)); const rest = order.filter((id) => !selSet.has(id)); order = [...sel, ...rest]; }
+    else if (mode === "bottom") { const sel = order.filter((id) => selSet.has(id)); const rest = order.filter((id) => !selSet.has(id)); order = [...rest, ...sel]; }
+    else if (mode === "up1") { for (let i = 1; i < order.length; i++) { if (selSet.has(order[i]) && !selSet.has(order[i - 1])) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; } } }
+    else if (mode === "down1") { for (let i = order.length - 2; i >= 0; i--) { if (selSet.has(order[i]) && !selSet.has(order[i + 1])) { [order[i + 1], order[i]] = [order[i], order[i + 1]]; } } }
+    const n = order.length, zmap = {}; order.forEach((id, idx) => { zmap[id] = n - idx; });
+    setPlacements((prev) => prev.map((p) => ({ ...p, z: zmap[p.id] ?? p.z })));
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target && e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) hist.doRedo(curDoc(), applyDoc); else hist.doUndo(curDoc(), applyDoc); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) { e.preventDefault(); hist.doRedo(curDoc(), applyDoc); return; }
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === "g" || e.key === "G") { e.preventDefault(); if (e.shiftKey) ungroupSel(); else groupSel(); }
+      else if (e.key === "]") { e.preventDefault(); bulkZ(e.shiftKey ? "top" : "up1"); }
+      else if (e.key === "[") { e.preventDefault(); bulkZ(e.shiftKey ? "bottom" : "down1"); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const addItem = (it) => {
     const w = frontW(it, "front");
@@ -358,28 +533,21 @@ function EditorView({ project, items, onSave, goLibrary }) {
       ? (g.header > 0 ? clamp(g.mainTop + (g.header - num(it.h)) / 2, 0, g.totalH - num(it.h)) : clamp(g.totalH - num(it.h) - 4, 0, g.totalH - num(it.h)))
       : g.floors[0];
     const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1;
-    const np = { id: uid(), itemId: it.id, face: "front", xCm, yCm, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0 };
+    const np = { id: uid(), itemId: it.id, face: "front", xCm, yCm, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false };
     setPlacements((p) => [...p, np]); setSelIds([np.id]);
   };
-  const updateP = (id, patch) => setPlacements((ps) => ps.map((p) => p.id === id ? { ...p, ...patch } : p));
+  const addItemAtHeader = (it) => {
+    const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1;
+    const np = { id: uid(), itemId: it.id, face: "front", xCm: 0, yCm: g.mainTop, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: true };
+    setPlacements((p) => [...p, np]); setSelIds([np.id]);
+  };
   const removeP = (id) => { setPlacements((ps) => ps.filter((p) => p.id !== id)); setSelIds((s) => s.filter((x) => x !== id)); };
   const removeSel = () => { setPlacements((ps) => ps.filter((p) => !selIds.includes(p.id))); setSelIds([]); };
-  const bringFront = (id) => updateP(id, { z: placements.reduce((m, p) => Math.max(m, p.z), 0) + 1 });
-  const sendBack = (id) => updateP(id, { z: placements.reduce((m, p) => Math.min(m, p.z), 0) - 1 });
-  const duplicateP = (id) => { const s = placements.find((p) => p.id === id); if (!s) return; const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1; const np = { ...s, id: uid(), xCm: clamp(num(s.xCm, 0) + 3, 0, g.w), z }; setPlacements((p) => [...p, np]); setSelIds([np.id]); };
-  const cycleFace = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; if (!it) return; const next = FACES[(FACES.indexOf(p.face) + 1) % 4]; updateP(id, { face: next, xCm: clamp(num(p.xCm, 0), 0, Math.max(0, g.w - blockW(it, next, p.colCount))) }); };
-  const setDepth = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; updateP(id, { depthCount: clamp(v, 1, maxFitP(it, p.depthStartCm)) }); };
-  const setCol = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = clamp(v, 1, maxColFit(it, p.face)); updateP(id, { colCount: c, xCm: clamp(num(p.xCm, 0), 0, Math.max(0, g.w - c * frontW(it, p.face))) }); };
-  const fillRow = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; updateP(id, { colCount: maxColFit(it, p.face), xCm: 0 }); };
-  const moveBy = (id, dir) => {
-    const sorted = [...placements].sort((a, b) => b.z - a.z);
-    const i = sorted.findIndex((p) => p.id === id), j = i + dir;
-    if (i < 0 || j < 0 || j >= sorted.length) return;
-    [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
-    const n = sorted.length, zmap = {}; sorted.forEach((p, idx) => { zmap[p.id] = n - idx; });
-    setPlacements((prev) => prev.map((p) => ({ ...p, z: zmap[p.id] ?? p.z })));
-  };
-  const clickSelect = (e, id) => { if (e.shiftKey || e.ctrlKey || e.metaKey) setSelIds((s) => s.includes(id) ? s.filter((x) => x !== id) : [...s, id]); else setSelIds([id]); };
+  const duplicateP = (id) => { const s = placements.find((p) => p.id === id); if (!s) return; const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1; const np = { ...s, id: uid(), xCm: clamp(num(s.xCm, 0) + 3, 0, g.w), z, groupId: null }; setPlacements((p) => [...p, np]); setSelIds([np.id]); };
+  const cycleFace = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; if (!it) return; const next = FACES[(FACES.indexOf(p.face) + 1) % 4]; setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, face: next, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, next, x.colCount))) } : x)); };
+  const setDepth = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const nv = clamp(v, 1, maxFitP(it, p.depthStartCm)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, depthCount: nv } : x)); };
+  const setCol = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = clamp(v, 1, maxColFit(it, p.face)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - c * frontW(it, x.face))) } : x)); };
+  const fillRow = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = maxColFit(it, p.face); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: 0 } : x)); };
 
   const nearestOf = (arr, v) => arr.reduce((b, f) => Math.abs(f - v) < Math.abs(b - v) ? f : b, arr[0]);
 
@@ -388,17 +556,18 @@ function EditorView({ project, items, onSave, goLibrary }) {
     const it = itemsById[p.itemId];
     const rect = boardRef.current.getBoundingClientRect();
     if (e.shiftKey || e.ctrlKey || e.metaKey) { setSelIds((s) => s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id]); return; }
+    const beforeDoc = curDoc();
     if (mode === "count") {
       setSelIds([p.id]);
-      dragRef.current = { mode: "count", id: p.id, it, depthStart: num(p.depthStartCm || 0) };
+      dragRef.current = { mode: "count", id: p.id, it, depthStart: num(p.depthStartCm || 0), lastCount: p.depthCount || 1, moved: false, beforeDoc };
       e.currentTarget.setPointerCapture?.(e.pointerId); return;
     }
-    const group = selIds.includes(p.id) && selIds.length > 1 ? selIds : [p.id];
-    if (!(selIds.includes(p.id) && selIds.length > 1)) setSelIds([p.id]);
+    const group = groupMembers(p.id, selIds);
+    if (!(selIds.includes(p.id) && selIds.length > 1)) setSelIds(group);
     const starts = {};
     for (const id of group) { const q = placements.find((x) => x.id === id); if (!q) continue; starts[id] = { h: getH(q), y: num(q.yCm, 0), it: itemsById[q.itemId], w: itemW(q) }; }
     const h = num(it.h), left0 = getH(p), dimW = itemW(p);
-    dragRef.current = { mode: "body", id: p.id, it, dim: { w: dimW, h }, group, starts, grabX: (e.clientX - rect.left) - left0 * ppc, grabY: (e.clientY - rect.top) - (vpTop - num(p.yCm, 0) - h) * ppc, lastH: left0, lastY: num(p.yCm, 0) };
+    dragRef.current = { mode: "body", id: p.id, it, dim: { w: dimW, h }, group, starts, grabX: (e.clientX - rect.left) - left0 * ppc, grabY: (e.clientY - rect.top) - (vpTop - num(p.yCm, 0) - h) * ppc, lastH: left0, lastY: num(p.yCm, 0), moved: false, beforeDoc };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
@@ -418,17 +587,25 @@ function EditorView({ project, items, onSave, goLibrary }) {
       const unit = Math.max(1, num(dg.it.d, 1)), start = dg.depthStart || 0;
       const depthCm = (e.clientX - rect.left) / ppc;
       const mx = Math.max(1, Math.floor((g.d - start) / unit));
-      updateP(dg.id, { depthCount: clamp(Math.round((depthCm - start) / unit), 1, mx) });
+      const nv = clamp(Math.round((depthCm - start) / unit), 1, mx);
+      if (nv !== dg.lastCount) { dg.moved = true; dg.lastCount = nv; }
+      setPlacementsRaw((ps) => ps.map((p) => p.id === dg.id ? { ...p, depthCount: nv } : p));
       return;
     }
     const newH = clamp(((e.clientX - rect.left) - dg.grabX) / ppc, 0, Math.max(0, viewW - dg.dim.w));
     const newY = clamp(vpTop - ((e.clientY - rect.top) - dg.grabY) / ppc - dg.dim.h, vpBot, Math.max(vpBot, vpTop - dg.dim.h));
+    if (newH !== dg.lastH || newY !== dg.lastY) dg.moved = true;
     const dH = newH - dg.starts[dg.id].h, dY = newY - dg.starts[dg.id].y;
-    for (const id of dg.group) { const st = dg.starts[id]; if (!st) continue; const f = horizField(st.it); updateP(id, { [f]: clamp(st.h + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(st.y + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) }); }
+    setPlacementsRaw((prev) => prev.map((p) => {
+      if (!dg.group.includes(p.id)) return p;
+      const st = dg.starts[p.id]; if (!st) return p;
+      const f = horizField(st.it);
+      return { ...p, [f]: clamp(st.h + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(st.y + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
+    }));
     dg.lastH = newH; dg.lastY = newY;
   };
 
-  const onUp = () => {
+  const onUp = (e) => {
     const dg = dragRef.current; if (!dg) { return; }
     if (dg.mode === "marquee") {
       const m = marquee;
@@ -440,9 +617,28 @@ function EditorView({ project, items, onSave, goLibrary }) {
       }
       setMarquee(null); dragRef.current = null; return;
     }
-    if (dg.mode === "body" && snap) {
+    if (dg.mode === "count") {
+      if (dg.moved) hist.push(dg.beforeDoc);
+      dragRef.current = null; return;
+    }
+
+    // mode === "body"
+    const wrapRect = boardRef.current.getBoundingClientRect();
+    const margin = 30;
+    const cx = e?.clientX, cy = e?.clientY;
+    const outside = dg.moved && cx != null && (cx < wrapRect.left - margin || cx > wrapRect.right + margin || cy < wrapRect.top - margin || cy > wrapRect.bottom + margin);
+    if (outside) {
+      hist.push(dg.beforeDoc);
+      const idsDel = new Set(dg.group);
+      setPlacementsRaw((ps) => ps.filter((p) => !idsDel.has(p.id)));
+      setSelIds([]);
+      dragRef.current = null;
+      return;
+    }
+
+    let snapY = dg.lastY, snapH = dg.lastH;
+    if (snap) {
       const it = dg.it, h = num(it.h), isGroup = dg.group.length > 1;
-      let snapY = dg.lastY, snapH = dg.lastH;
       const exclude = new Set(dg.group);
       const floorsV = ft != null ? g.floors.filter((f) => f >= vpBot - 0.5 && f <= vpTop + 0.5) : g.floors;
       const floorsUse = floorsV.length ? floorsV : g.floors;
@@ -459,7 +655,7 @@ function EditorView({ project, items, onSave, goLibrary }) {
           for (const o of others) { cands.push(o.xR); cands.push(o.xL - w); }
           let best = null, bestD = thr; for (const c of cands) { const d = Math.abs(c - x); if (d < bestD) { bestD = d; best = c; } }
           if (best != null) x = best;
-          for (let i = 0; i < 8; i++) { let moved = false; for (const o of others) { if (x < o.xR && x + w > o.xL) { const tl = o.xL - w, tr = o.xR; x = Math.abs(tl - x) <= Math.abs(tr - x) ? tl : tr; moved = true; } } if (!moved) break; }
+          for (let i = 0; i < 8; i++) { let moved2 = false; for (const o of others) { if (x < o.xR && x + w > o.xL) { const tl = o.xL - w, tr = o.xR; x = Math.abs(tl - x) <= Math.abs(tr - x) ? tl : tr; moved2 = true; } } if (!moved2) break; }
           snapH = clamp(x, 0, Math.max(0, g.w - w));
         }
       } else {
@@ -469,14 +665,29 @@ function EditorView({ project, items, onSave, goLibrary }) {
           snapY = clamp(nearestOf(sup, dg.lastY), vpBot, Math.max(vpBot, vpTop - h));
         }
       }
-      const dH = snapH - dg.lastH, dY = snapY - dg.lastY;
-      if (dH || dY) {
-        setPlacements((ps) => ps.map((p) => {
-          if (!dg.group.includes(p.id)) return p;
-          const st = dg.starts[p.id]; const f = horizField(st.it);
-          return { ...p, [f]: clamp(num(p[f], 0) + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(num(p.yCm, 0) + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
-        }));
-      }
+    }
+
+    // 헤더 영역에 놓으면 헤더 폭에 꼭 맞게 (정면·POSM 단일 선택일 때)
+    let headerFit;
+    if (isFront && dg.it.type === "posm" && g.header > 0 && dg.group.length === 1) {
+      const midY = snapY + num(dg.it.h) / 2;
+      if (midY >= g.mainTop) headerFit = true;
+      else { const cur = placements.find((p) => p.id === dg.id); if (cur?.fitHeader) headerFit = false; }
+    }
+
+    if (dg.moved) hist.push(dg.beforeDoc);
+
+    const dH = snapH - dg.lastH, dY = snapY - dg.lastY;
+    if (dH || dY || headerFit !== undefined) {
+      setPlacementsRaw((ps) => ps.map((p) => {
+        if (headerFit !== undefined && p.id === dg.id) {
+          return headerFit ? { ...p, fitHeader: true, xCm: 0, yCm: g.mainTop } : { ...p, fitHeader: false };
+        }
+        if (!dg.group.includes(p.id)) return p;
+        const st = dg.starts[p.id]; if (!st) return p;
+        const f = horizField(st.it);
+        return { ...p, [f]: clamp(num(p[f], 0) + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(num(p.yCm, 0) + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
+      }));
     }
     dragRef.current = null;
   };
@@ -495,6 +706,11 @@ function EditorView({ project, items, onSave, goLibrary }) {
       ctx.strokeStyle = "#8a6d43"; ctx.lineWidth = 5 * sc; ctx.strokeRect(0, headerPx, W, H - headerPx);
       for (const p of [...placements].sort((a, b) => a.z - b.z)) {
         const it = itemsById[p.itemId]; if (!it) continue;
+        if (p.fitHeader) {
+          const src = it.images?.front || it.images?.right || it.images?.left || it.images?.back;
+          if (src) { try { ctx.drawImage(await loadImg(src), 0, 0, W, headerPx); } catch {} }
+          continue;
+        }
         const fw = frontW(it, p.face), dw = fw * sc, dh = num(it.h) * sc, col = Math.max(1, p.colCount || 1);
         const left = num(p.xCm, 0) * sc, top = (g.totalH - num(p.yCm, 0) - num(it.h)) * sc;
         const src = it.images?.[p.face];
@@ -512,7 +728,7 @@ function EditorView({ project, items, onSave, goLibrary }) {
         for (let k = back; k >= 1; k--) await drawRow(off * k * 0.8, -off * k, Math.max(0.25, 0.6 - k * 0.08));
         await drawRow(0, 0, 1);
       }
-      const a = document.createElement("a"); a.href = c.toDataURL("image/png"); a.download = `VMD_${project.pharmacy || project.name || "mockup"}.png`; a.click();
+      const a = document.createElement("a"); a.href = c.toDataURL("image/png"); a.download = `VMD_${meta.name || project.id}.png`; a.click();
     } finally { setBusy(false); }
   };
 
@@ -523,23 +739,26 @@ function EditorView({ project, items, onSave, goLibrary }) {
 
   const renderPlacement = (p) => {
     const it = itemsById[p.itemId]; if (!it) return null;
-    const h = num(it.h), top = (vpTop - num(p.yCm, 0) - h) * ppc, sel0 = selIds.includes(p.id);
+    const h = p.fitHeader ? g.header : num(it.h);
+    const top = (vpTop - num(p.yCm, 0) - h) * ppc, sel0 = selIds.includes(p.id);
     if (isFront) {
-      const w = frontW(it, p.face), col = Math.max(1, p.colCount || 1), src = it.images?.[p.face];
-      const back = Math.min((p.depthCount || 1) - 1, 5);
+      const w = p.fitHeader ? g.w : frontW(it, p.face);
+      const col = p.fitHeader ? 1 : Math.max(1, p.colCount || 1);
+      const src = it.images?.[p.face];
+      const back = p.fitHeader ? 0 : Math.min((p.depthCount || 1) - 1, 5);
       const off = Math.max(3, Math.min(11, h * ppc * 0.09));
       const rowUnits = (cls, key) => (
         <div className={cls} key={key}>
           {Array.from({ length: col }).map((_, c) => (
             <div className="col-unit" style={{ left: c * w * ppc, width: w * ppc }} key={c}>
-              {src ? <img src={src} alt="" draggable={false} /> : <div className="pl-ph">{it.name?.slice(0, 5)}</div>}
+              {src ? <img src={src} alt="" draggable={false} style={p.fitHeader ? { objectFit: "fill" } : undefined} /> : <div className="pl-ph">{it.name?.slice(0, 5)}</div>}
             </div>
           ))}
         </div>
       );
       return (
-        <div key={p.id} className={"placement" + (sel0 ? " sel" : "") + (it.type === "posm" ? " posm" : "") + (back > 0 ? " has-depth" : "")}
-          style={{ left: num(p.xCm, 0) * ppc, top, width: w * col * ppc, height: h * ppc, zIndex: 100 + p.z }}
+        <div key={p.id} className={"placement" + (sel0 ? " sel" : "") + (it.type === "posm" ? " posm" : "") + (back > 0 ? " has-depth" : "") + (p.groupId ? " grouped" : "") + (p.fitHeader ? " fit-header" : "")}
+          style={{ left: p.fitHeader ? 0 : num(p.xCm, 0) * ppc, top, width: w * col * ppc, height: h * ppc, zIndex: 100 + p.z }}
           onPointerDown={(e) => startDrag(e, p, "body")}>
           {Array.from({ length: back }).map((_, k) => { const o = back - k; return (
             <div key={"bh" + k} className="behind" style={{ transform: `translate(${off * o * 0.8}px, ${-off * o}px)`, opacity: Math.max(0.22, 0.55 - o * 0.07) }}>{rowUnits("behind-row", k)}</div>); })}
@@ -548,9 +767,9 @@ function EditorView({ project, items, onSave, goLibrary }) {
       );
     } else {
       if (it.type === "posm") {
-        const sw = num(it.d), src = it.images?.left || it.images?.right;
+        const sw = num(it.d), src = it.images?.right || it.images?.front;
         return (
-          <div key={p.id} className={"placement side-posm posm" + (sel0 ? " sel" : "")}
+          <div key={p.id} className={"placement side-posm posm" + (sel0 ? " sel" : "") + (p.groupId ? " grouped" : "")}
             style={{ left: num(p.sideXCm || 0) * ppc, top, width: sw * ppc, height: h * ppc, zIndex: 100 + p.z }}
             onPointerDown={(e) => startDrag(e, p, "body")}>
             <div className="frontface">{src ? <img src={src} alt={it.name} draggable={false} /> : <div className="pl-ph">{it.name?.slice(0, 3)}</div>}</div>
@@ -558,9 +777,9 @@ function EditorView({ project, items, onSave, goLibrary }) {
         );
       }
       const unit = Math.max(1, num(it.d, 1)), cnt = p.depthCount || 1;
-      const sideSrc = it.images?.left || it.images?.right || it.images?.front;
+      const sideSrc = it.images?.right || it.images?.front;
       return (
-        <div key={p.id} className={"placement side" + (sel0 ? " sel" : "")}
+        <div key={p.id} className={"placement side" + (sel0 ? " sel" : "") + (p.groupId ? " grouped" : "")}
           style={{ left: num(p.depthStartCm || 0) * ppc, top, width: unit * cnt * ppc, height: h * ppc, zIndex: 100 + p.z }}
           onPointerDown={(e) => startDrag(e, p, "body")}>
           {Array.from({ length: cnt }).map((_, k) => (
@@ -586,7 +805,7 @@ function EditorView({ project, items, onSave, goLibrary }) {
         <div className="pal-list">
           {paletteItems.length === 0 && <div className="pal-empty">{palQuery ? "검색 결과 없음." : `라이브러리에 ${paletteTab === "product" ? "제품" : "POSM"}이 없음.`}</div>}
           {paletteItems.map((it) => (
-            <button className="pal-item" key={it.id} onClick={() => addItem(it)} title="클릭해서 매대에 추가">
+            <button className="pal-item" key={it.id} draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", it.id); e.dataTransfer.effectAllowed = "copy"; }} onClick={() => addItem(it)} title={it.type === "posm" ? "클릭해서 매대에 추가 · 헤더 영역으로 드래그하면 꽉 차게 배치" : "클릭해서 매대에 추가"}>
               <div className="pal-thumb">{it.images?.front ? <img src={it.images.front} alt="" /> : <span>{it.name?.slice(0, 2)}</span>}</div>
               <div className="pal-meta"><div className="pal-name">{it.name}</div><div className="muted xs">{it.w}×{it.h}×{it.d}</div></div>
             </button>
@@ -597,9 +816,10 @@ function EditorView({ project, items, onSave, goLibrary }) {
       <section className="canvas-col">
         <div className="canvas-toolbar">
           <div className="ct-left">
+            <button className="link-btn" onClick={goProjects}>← 프로젝트 목록</button>
             <div className="seg sm view-toggle">
               <button className={"seg-btn" + (isFront ? " on" : "")} onClick={() => setVmode("front")}>정면</button>
-              <button className={"seg-btn" + (!isFront ? " on" : "")} onClick={() => setVmode("side")}>측면</button>
+              <button className={"seg-btn" + (!isFront ? " on" : "")} onClick={() => setVmode("side")}>측면(우측)</button>
             </div>
             <span className="spec-chip">{isFront ? `폭 ${g.w}` : `깊이 ${g.d}`}×{Math.round(g.totalH)}cm · {g.tiers}단</span>
             <select className="tier-select" value={ft == null ? "all" : ft} onChange={(e) => setFocusTier(e.target.value === "all" ? null : Number(e.target.value))}>
@@ -607,20 +827,36 @@ function EditorView({ project, items, onSave, goLibrary }) {
               {Array.from({ length: g.tiers }).map((_, k) => { const i = g.tiers - 1 - k; return <option key={i} value={i}>{k + 1}단 확대</option>; })}
             </select>
             <label className="check"><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} /> 자석 정렬</label>
+            <div className="zoom-ctrl">
+              <button className="btn ghost sm" onClick={() => setZoomLevel((z) => clamp(+(z - 0.15).toFixed(2), 0.4, 3))}>－</button>
+              <span className="zoom-pct">{Math.round(zoomLevel * 100)}%</span>
+              <button className="btn ghost sm" onClick={() => setZoomLevel((z) => clamp(+(z + 0.15).toFixed(2), 0.4, 3))}>＋</button>
+            </div>
           </div>
-          <button className="btn primary sm" disabled={busy} onClick={exportPng}>{busy ? "생성 중…" : "시안 PNG 저장"}</button>
+          <div className="ct-right">
+            <button className="btn ghost sm" disabled={!hist.canUndo()} onClick={() => hist.doUndo(curDoc(), applyDoc)} title="실행취소 (Ctrl+Z)">↶ 실행취소</button>
+            <button className="btn ghost sm" disabled={!hist.canRedo()} onClick={() => hist.doRedo(curDoc(), applyDoc)} title="다시실행 (Ctrl+Shift+Z)">↷ 다시실행</button>
+            <button className="btn ghost sm" onClick={doSaveNow}>저장</button>
+            <button className="btn primary sm" disabled={busy} onClick={exportPng}>{busy ? "생성 중…" : "PNG 내보내기"}</button>
+          </div>
         </div>
         <div className="board-wrap" ref={boardRef}>
           <div className={"board" + (isFront ? "" : " side-dim") + (ft != null ? " zoom" : "")} style={{ width: viewW * ppc, height: vpH * ppc }}
             onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} onPointerDown={onBoardDown}>
-            {g.header > 0 && <div className="topper" style={{ bottom: (g.mainTop - vpBot) * ppc, height: g.header * ppc }}>{isFront ? "HEADER" : "측면"}</div>}
+            {g.header > 0 && (
+              <div className="topper" style={{ bottom: (g.mainTop - vpBot) * ppc, height: g.header * ppc }}
+                onDragOver={(e) => { if (isFront) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } }}
+                onDrop={(e) => { if (!isFront) return; e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); const it = itemsById[id]; if (it && it.type === "posm") addItemAtHeader(it); }}>
+                {isFront ? "HEADER (POSM 드래그 시 꽉 차게 배치)" : "측면"}
+              </div>
+            )}
             <div className="frame" style={{ bottom: (0 - vpBot) * ppc, height: g.mainTop * ppc }}>
               {g.base > 0 && <div className="base" style={{ height: g.base * ppc }}><span className="base-handle" /></div>}
               {g.boards.map((b, i) => <div key={i} className="board-plate" style={{ bottom: b.bottom * ppc, height: Math.max(2, b.h * ppc) }} />)}
             </div>
             {[...placements].sort((a, b) => a.z - b.z).map(renderPlacement)}
             {marquee && <div className="marquee" style={{ left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1), width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }} />}
-            {placements.length === 0 && <div className="board-hint">왼쪽에서 제품/POSM을 클릭해 매대에 올리기</div>}
+            {placements.length === 0 && <div className="board-hint">왼쪽에서 제품/POSM을 클릭해 매대에 올리기 (매대 밖으로 드래그하면 삭제됩니다)</div>}
             {!isFront && <div className="side-axis">◀ 앞　　　뒤 ▶</div>}
           </div>
         </div>
@@ -628,25 +864,38 @@ function EditorView({ project, items, onSave, goLibrary }) {
 
       <aside className="inspector">
         <div className="insp-block">
+          <div className="insp-title">프로젝트 정보</div>
+          <Field label="프로젝트명"><input className="inp sm" value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} /></Field>
+          <div className="grid2">
+            <Field label="요청기한"><input className="inp sm" type="date" value={meta.requestDate} onChange={(e) => setMeta({ ...meta, requestDate: e.target.value })} /></Field>
+            <Field label="완료기한"><input className="inp sm" type="date" value={meta.dueDate} onChange={(e) => setMeta({ ...meta, dueDate: e.target.value })} /></Field>
+          </div>
+          <Field label="메모"><input className="inp sm" value={meta.memo} onChange={(e) => setMeta({ ...meta, memo: e.target.value })} /></Field>
+        </div>
+        <div className="insp-block">
           <div className="insp-title">진열장 규격</div>
-          <ShelfFields shelf={shelf} set={setShelf} />
+          <ShelfFields shelf={shelf} set={(sh) => setShelf(sh)} />
         </div>
         {selIds.length > 1 ? (
           <div className="insp-block">
             <div className="insp-title">그룹 선택 · {selIds.length}개</div>
             <div className="muted sm">매대에서 끌면 함께 이동. 드롭 시 단에 맞춰 정렬.</div>
+            <div className="ctrl-grid">
+              <button className="btn ghost sm" onClick={groupSel}>그룹 묶기 (Ctrl+G)</button>
+              <button className="btn ghost sm" onClick={ungroupSel}>그룹 해제 (⇧Ctrl+G)</button>
+            </div>
             <button className="btn danger-ghost sm full" onClick={removeSel}>선택 항목 모두 삭제</button>
           </div>
         ) : (
           <div className="insp-block">
             <div className="insp-title">선택 요소</div>
-            {!sel && <div className="muted sm">매대에서 요소를 선택. (Shift·드래그로 여러 개)</div>}
+            {!sel && <div className="muted sm">매대에서 요소를 선택. (Shift·드래그로 여러 개, 매대 밖으로 드래그하면 삭제)</div>}
             {sel && selItem && (
               <>
-                <div className="sel-name">{selItem.name}</div>
+                <div className="sel-name">{selItem.name}{sel.groupId ? " · 그룹" : ""}</div>
                 <div className="muted xs">{FACE_KR[sel.face]} · {frontW(selItem, sel.face)}×{selItem.h}cm · 깊이 {selItem.d}cm</div>
                 <div className="readout"><span>{isFront ? "좌측" : "앞에서"} {Math.round(getH(sel))}cm</span><span>바닥 {Math.round(num(sel.yCm, 0))}cm</span></div>
-                {selItem.type === "product" && (
+                {selItem.type === "product" && !sel.fitHeader && (
                   <div className="depth-box">
                     <div className="depth-line"><span>가로 진열</span>
                       <div className="depth-ctrl">
@@ -672,11 +921,14 @@ function EditorView({ project, items, onSave, goLibrary }) {
                     <div className="muted xs">깊이 {Math.round(num(sel.depthStartCm, 0) + (sel.depthCount || 1) * num(selItem.d))}/{g.d}cm · 남은공간 최대 {maxFitP(selItem, sel.depthStartCm)}개</div>
                   </div>
                 )}
+                <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤</div>
                 <div className="ctrl-grid">
                   <button className="btn ghost sm" onClick={() => cycleFace(sel.id)}>면 회전 ↻</button>
                   <button className="btn ghost sm" onClick={() => duplicateP(sel.id)}>복제</button>
-                  <button className="btn ghost sm" onClick={() => bringFront(sel.id)}>맨 앞</button>
-                  <button className="btn ghost sm" onClick={() => sendBack(sel.id)}>맨 뒤</button>
+                  <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
+                  <button className="btn ghost sm" onClick={() => bulkZ("down1")}>한 칸 아래</button>
+                  <button className="btn ghost sm" onClick={() => bulkZ("top")}>맨 앞</button>
+                  <button className="btn ghost sm" onClick={() => bulkZ("bottom")}>맨 뒤</button>
                 </div>
                 <button className="btn danger-ghost sm full" onClick={() => removeP(sel.id)}>삭제</button>
               </>
@@ -685,20 +937,17 @@ function EditorView({ project, items, onSave, goLibrary }) {
         )}
         <div className="insp-block">
           <div className="insp-title">배치 목록 ({placements.length})</div>
+          <div className="muted xs">Ctrl+G 그룹 묶기 · Ctrl+Shift+G 그룹 해제 · Ctrl+]／Ctrl+[ 순서 변경</div>
           <div className="place-list">
             {placements.length === 0 && <div className="muted sm">없음</div>}
-            {[...placements].sort((a, b) => b.z - a.z).map((p, idx, arr) => {
+            {[...placements].sort((a, b) => b.z - a.z).map((p) => {
               const it = itemsById[p.itemId];
               return (
                 <div key={p.id} className={"place-row" + (selIds.includes(p.id) ? " on" : "")}>
-                  <button className="pr-main" onClick={(e) => clickSelect(e, p.id)}>
+                  <button className="pr-main" onClick={() => selectWithGroup(p.id)}>
                     <span className="pr-name">{it?.name || "(삭제됨)"}</span>
-                    <span className="muted xs">{[(p.colCount || 1) > 1 ? `가로${p.colCount}` : null, (p.depthCount || 1) > 1 ? `깊이${p.depthCount}` : null].filter(Boolean).join(" ") || FACE_KR[p.face]}</span>
+                    <span className="muted xs">{[p.groupId ? "그룹" : null, p.fitHeader ? "헤더" : null, (p.colCount || 1) > 1 ? `가로${p.colCount}` : null, (p.depthCount || 1) > 1 ? `깊이${p.depthCount}` : null].filter(Boolean).join(" ") || FACE_KR[p.face]}</span>
                   </button>
-                  <div className="pr-arrows">
-                    <button disabled={idx === 0} onClick={() => moveBy(p.id, -1)} title="앞으로">▲</button>
-                    <button disabled={idx === arr.length - 1} onClick={() => moveBy(p.id, 1)} title="뒤로">▼</button>
-                  </div>
                 </div>
               );
             })}
@@ -745,9 +994,11 @@ h1,p{margin:0}
 .btn.sm{padding:6px 12px;font-size:12.5px;border-radius:8px} .btn.full{width:100%;margin-top:8px}
 .btn.primary{background:var(--accent);color:#fff} .btn.primary:hover{background:var(--accent-d)} .btn.primary:disabled{background:#a9c6c1;cursor:not-allowed}
 .btn.ghost{background:var(--panel);border-color:var(--line);color:var(--ink)} .btn.ghost:hover{border-color:var(--accent);color:var(--accent-d)}
+.btn.ghost:disabled{opacity:.4;cursor:not-allowed}
 .btn.danger-ghost{background:transparent;color:var(--danger)} .btn.danger-ghost:hover{background:#fbe9e4}
 .row{display:flex;gap:8px} .row-end{display:flex;justify-content:flex-end;gap:10px;margin-top:16px} .gap6{gap:6px;margin-top:10px}
 .link-btn{border:none;background:none;color:var(--accent-d);font-weight:600;font-size:12px;padding:2px 0} .link-btn:hover{text-decoration:underline}
+.back-link{display:inline-block;margin-bottom:14px;font-size:13px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .form-card{padding:20px;margin-bottom:24px}
 .field{display:flex;flex-direction:column;gap:5px}
@@ -776,6 +1027,8 @@ h1,p{margin:0}
 .proj-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
 .proj-card{padding:14px;display:flex;flex-direction:column;gap:10px}
 .proj-mini{display:flex;justify-content:center;align-items:flex-end;background:var(--bg);border-radius:10px;padding:10px;min-height:130px}
+.store-card{align-items:stretch}
+.store-icon{font-size:34px;text-align:center;background:var(--bg);border-radius:10px;padding:20px 0}
 .proj-name{font-weight:700;letter-spacing:-.01em}
 .spec-chip{display:inline-block;font-size:11px;color:var(--accent-d);background:var(--accent-soft);padding:3px 9px;border-radius:7px;font-weight:600;width:fit-content}
 .proj-actions{display:flex;gap:8px;margin-top:auto} .proj-actions .btn{flex:1}
@@ -799,14 +1052,15 @@ h1,p{margin:0}
 .canvas-col{display:flex;flex-direction:column;background:var(--bg);min-width:0}
 .canvas-toolbar{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel);gap:12px;flex-wrap:wrap}
 .ct-left{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.ct-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.zoom-ctrl{display:flex;align-items:center;gap:6px}
+.zoom-pct{font-size:12px;font-weight:700;color:var(--muted);min-width:38px;text-align:center}
 .board-wrap{flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:28px}
 .board{position:relative;flex:none;touch-action:none}
-.board.zoom{overflow:hidden;border-radius:5px;box-shadow:var(--shadow)}
+.board.zoom{border-radius:5px;box-shadow:var(--shadow)}
 .tier-select{border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12.5px;background:#fcfdfd;color:var(--ink);font-weight:600;cursor:pointer}
 .tier-select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.vmk-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.vmk-board{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;overflow:auto;display:flex;justify-content:center}
-.topper{position:absolute;left:-2%;width:104%;top:0;background:linear-gradient(180deg,var(--accent),var(--accent-d));border-radius:6px 6px 3px 3px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.18em;font-size:13px;box-shadow:0 6px 12px rgba(11,111,101,.3);z-index:3}
+.topper{position:absolute;left:-2%;width:104%;top:0;background:linear-gradient(180deg,var(--accent),var(--accent-d));border-radius:6px 6px 3px 3px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.08em;font-size:12px;box-shadow:0 6px 12px rgba(11,111,101,.3);z-index:3;text-align:center;padding:0 6px}
 .frame{position:absolute;left:0;right:0;background:repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(138,109,67,.04) 40px,rgba(138,109,67,.04) 41px),linear-gradient(180deg,#f3ecdd,#e9dec7);border:6px solid var(--wood-edge);border-radius:5px;box-shadow:inset 0 0 30px rgba(138,109,67,.18),var(--shadow);z-index:1}
 .side-dim .frame{background:repeating-linear-gradient(90deg,transparent,transparent 30px,rgba(138,109,67,.05) 30px,rgba(138,109,67,.05) 31px),linear-gradient(180deg,#efe6d4,#e4d8bf)}
 .base{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#c2a376,#b89a6b);border-top:4px solid var(--wood-line);display:flex;align-items:center;justify-content:center}
@@ -820,6 +1074,8 @@ h1,p{margin:0}
 .placement .frontface{position:relative;z-index:1;width:100%;height:100%;display:flex;align-items:flex-end;justify-content:center}
 .placement img{width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none}
 .placement.has-depth{overflow:visible}
+.placement.fit-header{filter:drop-shadow(0 2px 4px rgba(0,0,0,.2))}
+.placement.grouped{outline:1.5px dashed var(--accent-d);outline-offset:3px;border-radius:3px}
 .behind{position:absolute;inset:0;z-index:0;display:flex;align-items:flex-end;justify-content:center;filter:saturate(.85) brightness(.96)}
 .behind-row{position:relative;width:100%;height:100%}
 .col-unit{position:absolute;top:0;bottom:0;display:flex;align-items:flex-end;justify-content:center}
@@ -851,11 +1107,7 @@ h1,p{margin:0}
 .place-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto}
 .place-row{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);background:#fcfdfd;border-radius:8px;padding:6px 8px 6px 10px;text-align:left;gap:6px}
 .place-row.on{border-color:var(--accent);background:var(--accent-soft)}
-.pr-main{flex:1;min-width:0;display:flex;justify-content:space-between;align-items:center;gap:8px;border:none;background:none;text-align:left;padding:0;font:inherit;color:inherit;cursor:pointer}
-.pr-arrows{display:flex;flex-direction:column;gap:2px;flex:none}
-.pr-arrows button{border:none;background:var(--bg);border-radius:4px;width:22px;height:15px;line-height:1;font-size:8px;color:var(--muted);padding:0;display:flex;align-items:center;justify-content:center}
-.pr-arrows button:hover:not(:disabled){background:var(--accent-soft);color:var(--accent-d)}
-.pr-arrows button:disabled{opacity:.3;cursor:default}
+.pr-main{flex:1;min-width:0;display:flex;justify-content:space-between;align-items:center;gap:8px;border:none;background:none;text-align:left;padding:0;font:inherit;color:inherit;cursor:pointer;width:100%}
 .pr-name{font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:900px){.editor{grid-template-columns:1fr;height:auto}.palette{border-right:none;border-bottom:1px solid var(--line)}.inspector{border-left:none;border-top:1px solid var(--line)}.grid4{grid-template-columns:1fr 1fr}}
 *:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
