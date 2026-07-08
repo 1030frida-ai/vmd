@@ -424,7 +424,7 @@ function ItemEditor({ draft, onCancel, onSave }) {
 function EditorView({ project, items, onSave, goLibrary, goProjects }) {
   const [meta, setMeta] = useState({ name: project.name || "", requestDate: project.requestDate || "", dueDate: project.dueDate || "", memo: project.memo || "" });
   const [shelf, setShelfRaw] = useState(normShelf(project.shelf));
-  const [placements, setPlacementsRaw] = useState((project.placements || []).map((p) => ({ depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false, ...p })));
+  const [placements, setPlacementsRaw] = useState((project.placements || []).map((p) => ({ depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false, rotationDeg: 0, ...p })));
   const [selIds, setSelIds] = useState([]);
   const [paletteTab, setPaletteTab] = useState("product");
   const [snap, setSnap] = useState(true);
@@ -515,6 +515,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     const onKey = (e) => {
       const tag = (e.target && e.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if ((e.key === "Delete" || e.key === "Backspace") && selIds.length && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); removeSel(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) hist.doRedo(curDoc(), applyDoc); else hist.doUndo(curDoc(), applyDoc); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) { e.preventDefault(); hist.doRedo(curDoc(), applyDoc); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -533,21 +534,66 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
       ? (g.header > 0 ? clamp(g.mainTop + (g.header - num(it.h)) / 2, 0, g.totalH - num(it.h)) : clamp(g.totalH - num(it.h) - 4, 0, g.totalH - num(it.h)))
       : g.floors[0];
     const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1;
-    const np = { id: uid(), itemId: it.id, face: "front", xCm, yCm, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false };
+    const np = { id: uid(), itemId: it.id, face: "front", xCm, yCm, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false, rotationDeg: 0 };
     setPlacements((p) => [...p, np]); setSelIds([np.id]);
   };
   const addItemAtHeader = (it) => {
     const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1;
-    const np = { id: uid(), itemId: it.id, face: "front", xCm: 0, yCm: g.mainTop, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: true };
+    const np = { id: uid(), itemId: it.id, face: "front", xCm: 0, yCm: g.mainTop, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: true, rotationDeg: 0 };
     setPlacements((p) => [...p, np]); setSelIds([np.id]);
   };
   const removeP = (id) => { setPlacements((ps) => ps.filter((p) => p.id !== id)); setSelIds((s) => s.filter((x) => x !== id)); };
   const removeSel = () => { setPlacements((ps) => ps.filter((p) => !selIds.includes(p.id))); setSelIds([]); };
   const duplicateP = (id) => { const s = placements.find((p) => p.id === id); if (!s) return; const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1; const np = { ...s, id: uid(), xCm: clamp(num(s.xCm, 0) + 3, 0, g.w), z, groupId: null }; setPlacements((p) => [...p, np]); setSelIds([np.id]); };
-  const cycleFace = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; if (!it) return; const next = FACES[(FACES.indexOf(p.face) + 1) % 4]; setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, face: next, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, next, x.colCount))) } : x)); };
+  const faceFromDeg = (deg) => { const d = ((deg % 360) + 360) % 360; if (d < 45 || d >= 315) return "front"; if (d < 135) return "right"; if (d < 225) return "back"; return "left"; };
+  const setRotation = (id, deg) => {
+    const p = placements.find((x) => x.id === id); if (!p) return;
+    const it = itemsById[p.itemId]; if (!it) return;
+    const nd = ((Math.round(deg) % 360) + 360) % 360;
+    const nf = faceFromDeg(nd);
+    setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, rotationDeg: nd, face: nf, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, nf, x.colCount))) } : x));
+  };
   const setDepth = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const nv = clamp(v, 1, maxFitP(it, p.depthStartCm)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, depthCount: nv } : x)); };
   const setCol = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = clamp(v, 1, maxColFit(it, p.face)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - c * frontW(it, x.face))) } : x)); };
   const fillRow = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = maxColFit(it, p.face); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: 0 } : x)); };
+
+  // 정면 뷰의 배치 순서(겹치는 자리 · z 순서)를 바탕으로, 측면 깊이 위치를 규격(d)에 맞게 자동으로 재배열
+  useEffect(() => {
+    const prods = placements.filter((p) => itemsById[p.itemId]?.type === "product");
+    if (!prods.length) return;
+    const rects = prods.map((p) => {
+      const it = itemsById[p.itemId];
+      const w = blockW(it, p.face, p.colCount);
+      const x0 = num(p.xCm, 0), x1 = x0 + w;
+      const y0 = num(p.yCm, 0), y1 = y0 + num(it.h, 0);
+      return { id: p.id, x0, x1, y0, y1, z: p.z, d: num(it.d, 1) * Math.max(1, p.depthCount || 1) };
+    });
+    const parent = {}; rects.forEach((r) => { parent[r.id] = r.id; });
+    const find = (a) => parent[a] === a ? a : (parent[a] = find(parent[a]));
+    const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i], b = rects[j];
+        const ox = a.x0 < b.x1 && a.x1 > b.x0;
+        const oy = a.y0 < b.y1 && a.y1 > b.y0;
+        if (ox && oy) union(a.id, b.id);
+      }
+    }
+    const groups = {};
+    rects.forEach((r) => { const root = find(r.id); (groups[root] = groups[root] || []).push(r); });
+    const patch = {};
+    Object.values(groups).forEach((members) => {
+      const sorted = [...members].sort((a, b) => b.z - a.z);
+      let acc = 0;
+      for (const m of sorted) { patch[m.id] = acc; acc += m.d; }
+    });
+    let changed = false;
+    const next = placements.map((p) => {
+      if (patch[p.id] !== undefined && Math.abs(num(p.depthStartCm, 0) - patch[p.id]) > 0.01) { changed = true; return { ...p, depthStartCm: patch[p.id] }; }
+      return p;
+    });
+    if (changed) setPlacementsRaw(next);
+  }, [placements, items]); // eslint-disable-line
 
   const nearestOf = (arr, v) => arr.reduce((b, f) => Math.abs(f - v) < Math.abs(b - v) ? f : b, arr[0]);
 
@@ -595,14 +641,16 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     const newH = clamp(((e.clientX - rect.left) - dg.grabX) / ppc, 0, Math.max(0, viewW - dg.dim.w));
     const newY = clamp(vpTop - ((e.clientY - rect.top) - dg.grabY) / ppc - dg.dim.h, vpBot, Math.max(vpBot, vpTop - dg.dim.h));
     if (newH !== dg.lastH || newY !== dg.lastY) dg.moved = true;
-    const dH = newH - dg.starts[dg.id].h, dY = newY - dg.starts[dg.id].y;
+    const lockHoriz = !isFront && dg.it.type === "product";
+    const dH = lockHoriz ? 0 : newH - dg.starts[dg.id].h, dY = newY - dg.starts[dg.id].y;
     setPlacementsRaw((prev) => prev.map((p) => {
       if (!dg.group.includes(p.id)) return p;
       const st = dg.starts[p.id]; if (!st) return p;
       const f = horizField(st.it);
-      return { ...p, [f]: clamp(st.h + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(st.y + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
+      const lockH = !isFront && st.it.type === "product";
+      return { ...p, [f]: lockH ? num(p[f], 0) : clamp(st.h + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(st.y + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
     }));
-    dg.lastH = newH; dg.lastY = newY;
+    dg.lastH = lockHoriz ? dg.lastH : newH; dg.lastY = newY;
   };
 
   const onUp = (e) => {
@@ -623,19 +671,6 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     }
 
     // mode === "body"
-    const wrapRect = boardRef.current.getBoundingClientRect();
-    const margin = 30;
-    const cx = e?.clientX, cy = e?.clientY;
-    const outside = dg.moved && cx != null && (cx < wrapRect.left - margin || cx > wrapRect.right + margin || cy < wrapRect.top - margin || cy > wrapRect.bottom + margin);
-    if (outside) {
-      hist.push(dg.beforeDoc);
-      const idsDel = new Set(dg.group);
-      setPlacementsRaw((ps) => ps.filter((p) => !idsDel.has(p.id)));
-      setSelIds([]);
-      dragRef.current = null;
-      return;
-    }
-
     let snapY = dg.lastY, snapH = dg.lastH;
     if (snap) {
       const it = dg.it, h = num(it.h), isGroup = dg.group.length > 1;
@@ -685,8 +720,9 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
         }
         if (!dg.group.includes(p.id)) return p;
         const st = dg.starts[p.id]; if (!st) return p;
+        const lockH = !isFront && st.it.type === "product";
         const f = horizField(st.it);
-        return { ...p, [f]: clamp(num(p[f], 0) + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(num(p.yCm, 0) + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
+        return { ...p, [f]: lockH ? num(p[f], 0) : clamp(num(p[f], 0) + dH, 0, Math.max(0, viewW - st.w)), yCm: clamp(num(p.yCm, 0) + dY, vpBot, Math.max(vpBot, vpTop - num(st.it.h))) };
       }));
     }
     dragRef.current = null;
@@ -747,11 +783,14 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
       const src = it.images?.[p.face];
       const back = p.fitHeader ? 0 : Math.min((p.depthCount || 1) - 1, 5);
       const off = Math.max(3, Math.min(11, h * ppc * 0.09));
+      const cubeD = (p.face === "front" || p.face === "back") ? num(it.d, 1) : num(it.w, 1);
       const rowUnits = (cls, key) => (
         <div className={cls} key={key}>
           {Array.from({ length: col }).map((_, c) => (
             <div className="col-unit" style={{ left: c * w * ppc, width: w * ppc }} key={c}>
-              {src ? <img src={src} alt="" draggable={false} style={p.fitHeader ? { objectFit: "fill" } : undefined} /> : <div className="pl-ph">{it.name?.slice(0, 5)}</div>}
+              {it.type === "product"
+                ? <ProductCube it={it} wPx={w * ppc} dPx={cubeD * ppc} hPx={h * ppc} deg={p.rotationDeg || 0} />
+                : (src ? <img src={src} alt="" draggable={false} style={p.fitHeader ? { objectFit: "fill" } : undefined} /> : <div className="pl-ph">{it.name?.slice(0, 5)}</div>)}
             </div>
           ))}
         </div>
@@ -847,7 +886,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
               <div className="topper" style={{ bottom: (g.mainTop - vpBot) * ppc, height: g.header * ppc }}
                 onDragOver={(e) => { if (isFront) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } }}
                 onDrop={(e) => { if (!isFront) return; e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); const it = itemsById[id]; if (it && it.type === "posm") addItemAtHeader(it); }}>
-                {isFront ? "HEADER (POSM 드래그 시 꽉 차게 배치)" : "측면"}
+                드래그로 삽입
               </div>
             )}
             <div className="frame" style={{ bottom: (0 - vpBot) * ppc, height: g.mainTop * ppc }}>
@@ -856,7 +895,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
             </div>
             {[...placements].sort((a, b) => a.z - b.z).map(renderPlacement)}
             {marquee && <div className="marquee" style={{ left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1), width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }} />}
-            {placements.length === 0 && <div className="board-hint">왼쪽에서 제품/POSM을 클릭해 매대에 올리기 (매대 밖으로 드래그하면 삭제됩니다)</div>}
+            {placements.length === 0 && <div className="board-hint">왼쪽에서 제품/POSM을 클릭해 매대에 올리기</div>}
             {!isFront && <div className="side-axis">◀ 앞　　　뒤 ▶</div>}
           </div>
         </div>
@@ -889,7 +928,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
         ) : (
           <div className="insp-block">
             <div className="insp-title">선택 요소</div>
-            {!sel && <div className="muted sm">매대에서 요소를 선택. (Shift·드래그로 여러 개, 매대 밖으로 드래그하면 삭제)</div>}
+            {!sel && <div className="muted sm">매대에서 요소를 선택. (Shift·드래그로 여러 개, Delete 키로 삭제)</div>}
             {sel && selItem && (
               <>
                 <div className="sel-name">{selItem.name}{sel.groupId ? " · 그룹" : ""}</div>
@@ -921,9 +960,19 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
                     <div className="muted xs">깊이 {Math.round(num(sel.depthStartCm, 0) + (sel.depthCount || 1) * num(selItem.d))}/{g.d}cm · 남은공간 최대 {maxFitP(selItem, sel.depthStartCm)}개</div>
                   </div>
                 )}
-                <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤</div>
+                {selItem.type === "product" && (
+                  <div className="depth-box">
+                    <div className="depth-line"><span>회전각 (정면 기준)</span></div>
+                    <div className="depth-ctrl">
+                      <button className="btn ghost sm" onClick={() => setRotation(sel.id, (sel.rotationDeg || 0) - 90)}>−90°</button>
+                      <input className="inp sm rot-input" type="number" value={sel.rotationDeg || 0} onChange={(e) => setRotation(sel.id, num(e.target.value, 0))} />
+                      <button className="btn ghost sm" onClick={() => setRotation(sel.id, (sel.rotationDeg || 0) + 90)}>+90°</button>
+                    </div>
+                    <div className="muted xs">0~359° 사이 숫자 입력으로 360도 자유 회전</div>
+                  </div>
+                )}
+                <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤 · Delete 키로 삭제</div>
                 <div className="ctrl-grid">
-                  <button className="btn ghost sm" onClick={() => cycleFace(sel.id)}>면 회전 ↻</button>
                   <button className="btn ghost sm" onClick={() => duplicateP(sel.id)}>복제</button>
                   <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
                   <button className="btn ghost sm" onClick={() => bulkZ("down1")}>한 칸 아래</button>
@@ -959,6 +1008,22 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
 }
 
 function Field({ label, children }) { return <label className="field"><span className="field-label">{label}</span>{children}</label>; }
+
+function ProductCube({ it, wPx, dPx, hPx, deg }) {
+  const front = it.images?.front, back = it.images?.back, right = it.images?.right, left = it.images?.left;
+  const sideOffset = (wPx - dPx) / 2;
+  const ph = (label) => <div className="pl-ph">{it.name?.slice(0, label)}</div>;
+  return (
+    <div className="cube-scene" style={{ width: wPx, height: hPx }}>
+      <div className="cube" style={{ width: wPx, height: hPx, transform: `rotateY(${deg}deg)` }}>
+        <div className="cube-face" style={{ transform: `translateZ(${dPx / 2}px)` }}>{front ? <img src={front} alt="" draggable={false} /> : ph(5)}</div>
+        <div className="cube-face" style={{ transform: `rotateY(180deg) translateZ(${dPx / 2}px)` }}>{back ? <img src={back} alt="" draggable={false} /> : ph(5)}</div>
+        <div className="cube-face" style={{ width: dPx, left: sideOffset, transform: `rotateY(90deg) translateZ(${wPx / 2}px)` }}>{right ? <img src={right} alt="" draggable={false} /> : ph(3)}</div>
+        <div className="cube-face" style={{ width: dPx, left: sideOffset, transform: `rotateY(-90deg) translateZ(${wPx / 2}px)` }}>{left ? <img src={left} alt="" draggable={false} /> : ph(3)}</div>
+      </div>
+    </div>
+  );
+}
 
 /* =========================================================================
    스타일
@@ -1080,6 +1145,10 @@ h1,p{margin:0}
 .behind-row{position:relative;width:100%;height:100%}
 .col-unit{position:absolute;top:0;bottom:0;display:flex;align-items:flex-end;justify-content:center}
 .col-unit img{width:100%;height:100%;object-fit:contain}
+.cube-scene{position:relative;perspective:1200px}
+.cube{position:relative;transform-style:preserve-3d}
+.cube-face{position:absolute;top:0;left:0;width:100%;height:100%;backface-visibility:hidden;display:flex;align-items:flex-end;justify-content:center}
+.cube-face img{width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none}
 .placement.posm{filter:drop-shadow(0 2px 5px rgba(0,0,0,.22))}
 .placement.sel{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
 .placement.side{align-items:stretch}
@@ -1103,6 +1172,7 @@ h1,p{margin:0}
 .depth-line{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:700;color:var(--accent-d)}
 .depth-ctrl{display:flex;align-items:center;gap:5px}
 .depth-ctrl .btn{padding:3px 9px} .cnt{min-width:24px;text-align:center;font-weight:750}
+.rot-input{width:64px;text-align:center;padding:5px 4px}
 .ctrl-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px}
 .place-list{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto}
 .place-row{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);background:#fcfdfd;border-radius:8px;padding:6px 8px 6px 10px;text-align:left;gap:6px}
