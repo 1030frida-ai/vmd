@@ -22,10 +22,17 @@ create table if not exists public.fixtures (
   updated_at timestamptz default now()
 );
 
+create table if not exists public.stores (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz default now()
+);
+
 -- 2) RLS 활성화
 alter table public.items enable row level security;
 alter table public.projects enable row level security;
 alter table public.fixtures enable row level security;
+alter table public.stores enable row level security;
 
 -- 3) 접근 정책
 --    [간단 버전] 익명(anon) 키로 읽기/쓰기 모두 허용 — 사내 비공개 도구용.
@@ -35,6 +42,8 @@ create policy "anon all items" on public.items
 create policy "anon all projects" on public.projects
   for all to anon using (true) with check (true);
 create policy "anon all fixtures" on public.fixtures
+  for all to anon using (true) with check (true);
+create policy "anon all stores" on public.stores
   for all to anon using (true) with check (true);
 
 -- ── (선택) 로그인 버전: 위 두 policy 대신 아래를 쓰고, 앱에 Supabase Auth를 붙이세요.
