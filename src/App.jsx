@@ -434,9 +434,11 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
   const [marquee, setMarquee] = useState(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const boardRef = useRef(null);
+  const boardElRef = useRef(null);
   const [boardW, setBoardW] = useState(720);
   const [busy, setBusy] = useState(false);
   const dragRef = useRef(null);
+  const clipboardRef = useRef(null);
   const hist = useHistory(5);
 
   const itemsById = Object.fromEntries(items.map((i) => [i.id, i]));
@@ -516,6 +518,8 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
       const tag = (e.target && e.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
       if ((e.key === "Delete" || e.key === "Backspace") && selIds.length && !(e.ctrlKey || e.metaKey)) { e.preventDefault(); removeSel(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) { e.preventDefault(); copySel(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) { e.preventDefault(); pasteClipboard(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) hist.doRedo(curDoc(), applyDoc); else hist.doUndo(curDoc(), applyDoc); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) { e.preventDefault(); hist.doRedo(curDoc(), applyDoc); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -542,25 +546,98 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     const np = { id: uid(), itemId: it.id, face: "front", xCm: 0, yCm: g.mainTop, z, depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: true, rotationDeg: 0 };
     setPlacements((p) => [...p, np]); setSelIds([np.id]);
   };
-  const removeP = (id) => { setPlacements((ps) => ps.filter((p) => p.id !== id)); setSelIds((s) => s.filter((x) => x !== id)); };
-  const removeSel = () => { setPlacements((ps) => ps.filter((p) => !selIds.includes(p.id))); setSelIds([]); };
-  const duplicateP = (id) => { const s = placements.find((p) => p.id === id); if (!s) return; const z = placements.reduce((m, p) => Math.max(m, p.z), 0) + 1; const np = { ...s, id: uid(), xCm: clamp(num(s.xCm, 0) + 3, 0, g.w), z, groupId: null }; setPlacements((p) => [...p, np]); setSelIds([np.id]); };
+  const asIds = (ids) => Array.isArray(ids) ? ids : [ids];
+  const copySel = () => {
+    if (!selIds.length) return;
+    clipboardRef.current = placements.filter((p) => selIds.includes(p.id)).map((p) => ({ ...p }));
+  };
+  const pasteClipboard = () => {
+    const clip = clipboardRef.current;
+    if (!clip || !clip.length) return;
+    let z = placements.reduce((m, p) => Math.max(m, p.z), 0);
+    const groupIdMap = {};
+    const news = clip.map((p) => {
+      z += 1;
+      let gid = p.groupId;
+      if (gid) { if (!groupIdMap[gid]) groupIdMap[gid] = uid(); gid = groupIdMap[gid]; }
+      return { ...p, id: uid(), xCm: clamp(num(p.xCm, 0) + 4, 0, g.w), z, groupId: gid };
+    });
+    setPlacements((ps) => [...ps, ...news]);
+    setSelIds(news.map((n) => n.id));
+  };
+  const removeP = (ids) => { const idArr = asIds(ids); setPlacements((ps) => ps.filter((p) => !idArr.includes(p.id))); setSelIds((s) => s.filter((x) => !idArr.includes(x))); };
+  const removeSel = () => removeP(selIds);
+  const duplicateP = (ids) => {
+    const idArr = asIds(ids);
+    const srcs = placements.filter((p) => idArr.includes(p.id));
+    if (!srcs.length) return;
+    let z = placements.reduce((m, p) => Math.max(m, p.z), 0);
+    const news = srcs.map((s) => { z += 1; return { ...s, id: uid(), xCm: clamp(num(s.xCm, 0) + 3, 0, g.w), z, groupId: null }; });
+    setPlacements((p) => [...p, ...news]); setSelIds(news.map((n) => n.id));
+  };
   const faceFromDeg = (deg) => { const d = ((deg % 360) + 360) % 360; if (d < 45 || d >= 315) return "front"; if (d < 135) return "right"; if (d < 225) return "back"; return "left"; };
-  const setRotation = (id, deg) => {
-    const p = placements.find((x) => x.id === id); if (!p) return;
-    const it = itemsById[p.itemId]; if (!it) return;
+  const bumpRotation = (ids, delta) => {
+    const idArr = asIds(ids);
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      const nd = ((Math.round((x.rotationDeg || 0) + delta) % 360) + 360) % 360;
+      const nf = faceFromDeg(nd);
+      return { ...x, rotationDeg: nd, face: nf, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, nf, x.colCount))) };
+    }));
+  };
+  const setRotationAbs = (ids, deg) => {
+    const idArr = asIds(ids);
     const nd = ((Math.round(deg) % 360) + 360) % 360;
     const nf = faceFromDeg(nd);
-    setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, rotationDeg: nd, face: nf, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, nf, x.colCount))) } : x));
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      return { ...x, rotationDeg: nd, face: nf, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - blockW(it, nf, x.colCount))) };
+    }));
   };
-  const setDepth = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const nv = clamp(v, 1, maxFitP(it, p.depthStartCm)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, depthCount: nv } : x)); };
-  const setCol = (id, v) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = clamp(v, 1, maxColFit(it, p.face)); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - c * frontW(it, x.face))) } : x)); };
-  const fillRow = (id) => { const p = placements.find((x) => x.id === id); if (!p) return; const it = itemsById[p.itemId]; const c = maxColFit(it, p.face); setPlacements((ps) => ps.map((x) => x.id === id ? { ...x, colCount: c, xCm: 0 } : x)); };
+  const bumpDepth = (ids, delta) => {
+    const idArr = asIds(ids);
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      const nv = clamp((x.depthCount || 1) + delta, 1, maxFitP(it, depthStartOf(x)));
+      return { ...x, depthCount: nv };
+    }));
+  };
+  const maxDepth = (ids) => {
+    const idArr = asIds(ids);
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      return { ...x, depthCount: maxFitP(it, depthStartOf(x)) };
+    }));
+  };
+  const bumpCol = (ids, delta) => {
+    const idArr = asIds(ids);
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      const c = clamp((x.colCount || 1) + delta, 1, maxColFit(it, x.face));
+      return { ...x, colCount: c, xCm: clamp(num(x.xCm, 0), 0, Math.max(0, g.w - c * frontW(it, x.face))) };
+    }));
+  };
+  const fillRow = (ids) => {
+    const idArr = asIds(ids);
+    setPlacements((ps) => ps.map((x) => {
+      if (!idArr.includes(x.id)) return x;
+      const it = itemsById[x.itemId]; if (!it || it.type !== "product") return x;
+      const c = maxColFit(it, x.face);
+      return { ...x, colCount: c, xCm: 0 };
+    }));
+  };
 
-  // 정면 뷰의 배치 순서(겹치는 자리 · z 순서)를 바탕으로, 측면 깊이 위치를 규격(d)에 맞게 자동으로 재배열
-  useEffect(() => {
+
+  // 정면 뷰의 배치 순서(겹치는 자리 · z 순서)를 바탕으로 측면 깊이 위치를 규격(d)에 맞게 자동 계산.
+  // 상태를 바꾸지 않는 순수 계산값이라 저장/실행취소와 절대 충돌하지 않음(매 렌더마다 다시 계산만 함).
+  const autoDepthMap = {};
+  {
     const prods = placements.filter((p) => itemsById[p.itemId]?.type === "product");
-    if (!prods.length) return;
     const rects = prods.map((p) => {
       const it = itemsById[p.itemId];
       const w = blockW(it, p.face, p.colCount);
@@ -574,51 +651,55 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     for (let i = 0; i < rects.length; i++) {
       for (let j = i + 1; j < rects.length; j++) {
         const a = rects[i], b = rects[j];
-        const ox = a.x0 < b.x1 && a.x1 > b.x0;
-        const oy = a.y0 < b.y1 && a.y1 > b.y0;
-        if (ox && oy) union(a.id, b.id);
+        if (a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0) union(a.id, b.id);
       }
     }
     const groups = {};
     rects.forEach((r) => { const root = find(r.id); (groups[root] = groups[root] || []).push(r); });
-    const patch = {};
     Object.values(groups).forEach((members) => {
       const sorted = [...members].sort((a, b) => b.z - a.z);
       let acc = 0;
-      for (const m of sorted) { patch[m.id] = acc; acc += m.d; }
+      for (const m of sorted) { autoDepthMap[m.id] = acc; acc += m.d; }
     });
-    let changed = false;
-    const next = placements.map((p) => {
-      if (patch[p.id] !== undefined && Math.abs(num(p.depthStartCm, 0) - patch[p.id]) > 0.01) { changed = true; return { ...p, depthStartCm: patch[p.id] }; }
-      return p;
-    });
-    if (changed) setPlacementsRaw(next);
-  }, [placements, items]); // eslint-disable-line
+  }
+  const depthStartOf = (p) => autoDepthMap[p.id] !== undefined ? autoDepthMap[p.id] : num(p.depthStartCm, 0);
+
 
   const nearestOf = (arr, v) => arr.reduce((b, f) => Math.abs(f - v) < Math.abs(b - v) ? f : b, arr[0]);
 
   const startDrag = (e, p, mode) => {
     e.stopPropagation();
     const it = itemsById[p.itemId];
-    const rect = boardRef.current.getBoundingClientRect();
-    if (e.shiftKey || e.ctrlKey || e.metaKey) { setSelIds((s) => s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id]); return; }
+    const rect = boardElRef.current.getBoundingClientRect();
+    const shiftLike = e.shiftKey || e.ctrlKey || e.metaKey;
     const beforeDoc = curDoc();
     if (mode === "count") {
       setSelIds([p.id]);
-      dragRef.current = { mode: "count", id: p.id, it, depthStart: num(p.depthStartCm || 0), lastCount: p.depthCount || 1, moved: false, beforeDoc };
+      dragRef.current = { mode: "count", id: p.id, it, depthStart: depthStartOf(p), lastCount: p.depthCount || 1, moved: false, beforeDoc };
       e.currentTarget.setPointerCapture?.(e.pointerId); return;
     }
-    const group = groupMembers(p.id, selIds);
-    if (!(selIds.includes(p.id) && selIds.length > 1)) setSelIds(group);
+    let group, deferToggleId = null;
+    if (shiftLike) {
+      if (selIds.includes(p.id)) {
+        if (selIds.length > 1) { group = selIds; deferToggleId = p.id; }
+        else { setSelIds([]); return; }
+      } else {
+        group = [...selIds, p.id];
+        setSelIds(group);
+      }
+    } else {
+      group = groupMembers(p.id, selIds);
+      if (!(selIds.includes(p.id) && selIds.length > 1)) setSelIds(group);
+    }
     const starts = {};
     for (const id of group) { const q = placements.find((x) => x.id === id); if (!q) continue; starts[id] = { h: getH(q), y: num(q.yCm, 0), it: itemsById[q.itemId], w: itemW(q) }; }
     const h = num(it.h), left0 = getH(p), dimW = itemW(p);
-    dragRef.current = { mode: "body", id: p.id, it, dim: { w: dimW, h }, group, starts, grabX: (e.clientX - rect.left) - left0 * ppc, grabY: (e.clientY - rect.top) - (vpTop - num(p.yCm, 0) - h) * ppc, lastH: left0, lastY: num(p.yCm, 0), moved: false, beforeDoc };
+    dragRef.current = { mode: "body", id: p.id, it, dim: { w: dimW, h }, group, starts, grabX: (e.clientX - rect.left) - left0 * ppc, grabY: (e.clientY - rect.top) - (vpTop - num(p.yCm, 0) - h) * ppc, lastH: left0, lastY: num(p.yCm, 0), moved: false, beforeDoc, deferToggleId };
     e.currentTarget.setPointerCapture?.(e.pointerId);
   };
 
   const onBoardDown = (e) => {
-    const rect = boardRef.current.getBoundingClientRect();
+    const rect = boardElRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     if (!(e.shiftKey || e.ctrlKey || e.metaKey)) setSelIds([]);
     dragRef.current = { mode: "marquee" };
@@ -627,7 +708,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
 
   const onMove = (e) => {
     const dg = dragRef.current; if (!dg) return;
-    const rect = boardRef.current.getBoundingClientRect();
+    const rect = boardElRef.current.getBoundingClientRect();
     if (dg.mode === "marquee") { setMarquee((m) => m && { ...m, x1: e.clientX - rect.left, y1: e.clientY - rect.top }); return; }
     if (dg.mode === "count") {
       const unit = Math.max(1, num(dg.it.d, 1)), start = dg.depthStart || 0;
@@ -671,6 +752,11 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
     }
 
     // mode === "body"
+    if (dg.deferToggleId && !dg.moved) {
+      setSelIds((s) => s.filter((x) => x !== dg.deferToggleId));
+      dragRef.current = null;
+      return;
+    }
     let snapY = dg.lastY, snapH = dg.lastH;
     if (snap) {
       const it = dg.it, h = num(it.h), isGroup = dg.group.length > 1;
@@ -819,7 +905,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
       const sideSrc = it.images?.right || it.images?.front;
       return (
         <div key={p.id} className={"placement side" + (sel0 ? " sel" : "") + (p.groupId ? " grouped" : "")}
-          style={{ left: num(p.depthStartCm || 0) * ppc, top, width: unit * cnt * ppc, height: h * ppc, zIndex: 100 + p.z }}
+          style={{ left: depthStartOf(p) * ppc, top, width: unit * cnt * ppc, height: h * ppc, zIndex: 100 + p.z }}
           onPointerDown={(e) => startDrag(e, p, "body")}>
           {Array.from({ length: cnt }).map((_, k) => (
             <div key={k} className="depth-unit" style={{ left: k * unit * ppc, width: unit * ppc }}>
@@ -880,7 +966,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
           </div>
         </div>
         <div className="board-wrap" ref={boardRef}>
-          <div className={"board" + (isFront ? "" : " side-dim") + (ft != null ? " zoom" : "")} style={{ width: viewW * ppc, height: vpH * ppc }}
+          <div className={"board" + (isFront ? "" : " side-dim") + (ft != null ? " zoom" : "")} ref={boardElRef} style={{ width: viewW * ppc, height: vpH * ppc }}
             onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp} onPointerDown={onBoardDown}>
             {g.header > 0 && (
               <div className="topper" style={{ bottom: (g.mainTop - vpBot) * ppc, height: g.header * ppc }}
@@ -917,11 +1003,43 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
         </div>
         {selIds.length > 1 ? (
           <div className="insp-block">
-            <div className="insp-title">그룹 선택 · {selIds.length}개</div>
-            <div className="muted sm">매대에서 끌면 함께 이동. 드롭 시 단에 맞춰 정렬.</div>
+            <div className="insp-title">다중 선택 · {selIds.length}개</div>
+            <div className="muted sm">그룹으로 묶지 않아도 함께 이동·편집됩니다. (Ctrl+C/Ctrl+V 복사·붙여넣기, Delete 삭제)</div>
+            <div className="depth-box">
+              <div className="depth-line"><span>가로 진열 (제품만 적용)</span>
+                <div className="depth-ctrl">
+                  <button className="btn ghost sm" onClick={() => bumpCol(selIds, -1)}>−</button>
+                  <button className="btn ghost sm" onClick={() => bumpCol(selIds, 1)}>＋</button>
+                  <button className="btn ghost sm" onClick={() => fillRow(selIds)}>꽉</button>
+                </div>
+              </div>
+            </div>
+            <div className="depth-box">
+              <div className="depth-line"><span>깊이 진열 (제품만 적용)</span>
+                <div className="depth-ctrl">
+                  <button className="btn ghost sm" onClick={() => bumpDepth(selIds, -1)}>−</button>
+                  <button className="btn ghost sm" onClick={() => bumpDepth(selIds, 1)}>＋</button>
+                  <button className="btn ghost sm" onClick={() => maxDepth(selIds)}>최대</button>
+                </div>
+              </div>
+            </div>
+            <div className="depth-box">
+              <div className="depth-line"><span>회전 (제품만 적용)</span>
+                <div className="depth-ctrl">
+                  <button className="btn ghost sm" onClick={() => bumpRotation(selIds, -90)}>−90°</button>
+                  <button className="btn ghost sm" onClick={() => bumpRotation(selIds, 90)}>+90°</button>
+                </div>
+              </div>
+            </div>
+            <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤</div>
             <div className="ctrl-grid">
-              <button className="btn ghost sm" onClick={groupSel}>그룹 묶기 (Ctrl+G)</button>
-              <button className="btn ghost sm" onClick={ungroupSel}>그룹 해제 (⇧Ctrl+G)</button>
+              <button className="btn ghost sm" onClick={() => duplicateP(selIds)}>복제</button>
+              <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
+              <button className="btn ghost sm" onClick={() => bulkZ("down1")}>한 칸 아래</button>
+              <button className="btn ghost sm" onClick={() => bulkZ("top")}>맨 앞</button>
+              <button className="btn ghost sm" onClick={() => bulkZ("bottom")}>맨 뒤</button>
+              <button className="btn ghost sm" onClick={groupSel}>그룹 묶기</button>
+              <button className="btn ghost sm" onClick={ungroupSel}>그룹 해제</button>
             </div>
             <button className="btn danger-ghost sm full" onClick={removeSel}>선택 항목 모두 삭제</button>
           </div>
@@ -933,14 +1051,14 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
               <>
                 <div className="sel-name">{selItem.name}{sel.groupId ? " · 그룹" : ""}</div>
                 <div className="muted xs">{FACE_KR[sel.face]} · {frontW(selItem, sel.face)}×{selItem.h}cm · 깊이 {selItem.d}cm</div>
-                <div className="readout"><span>{isFront ? "좌측" : "앞에서"} {Math.round(getH(sel))}cm</span><span>바닥 {Math.round(num(sel.yCm, 0))}cm</span></div>
+                <div className="readout"><span>{isFront ? "좌측" : "앞에서"} {Math.round(isFront || selItem.type === "posm" ? getH(sel) : depthStartOf(sel))}cm</span><span>바닥 {Math.round(num(sel.yCm, 0))}cm</span></div>
                 {selItem.type === "product" && !sel.fitHeader && (
                   <div className="depth-box">
                     <div className="depth-line"><span>가로 진열</span>
                       <div className="depth-ctrl">
-                        <button className="btn ghost sm" onClick={() => setCol(sel.id, (sel.colCount || 1) - 1)}>−</button>
+                        <button className="btn ghost sm" onClick={() => bumpCol(sel.id, -1)}>−</button>
                         <span className="cnt">{sel.colCount || 1}</span>
-                        <button className="btn ghost sm" onClick={() => setCol(sel.id, (sel.colCount || 1) + 1)}>＋</button>
+                        <button className="btn ghost sm" onClick={() => bumpCol(sel.id, 1)}>＋</button>
                         <button className="btn ghost sm" onClick={() => fillRow(sel.id)}>꽉</button>
                       </div>
                     </div>
@@ -951,27 +1069,27 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
                   <div className="depth-box">
                     <div className="depth-line"><span>깊이 진열</span>
                       <div className="depth-ctrl">
-                        <button className="btn ghost sm" onClick={() => setDepth(sel.id, (sel.depthCount || 1) - 1)}>−</button>
+                        <button className="btn ghost sm" onClick={() => bumpDepth(sel.id, -1)}>−</button>
                         <span className="cnt">{sel.depthCount || 1}</span>
-                        <button className="btn ghost sm" onClick={() => setDepth(sel.id, (sel.depthCount || 1) + 1)}>＋</button>
-                        <button className="btn ghost sm" onClick={() => setDepth(sel.id, maxFitP(selItem, sel.depthStartCm))}>최대</button>
+                        <button className="btn ghost sm" onClick={() => bumpDepth(sel.id, 1)}>＋</button>
+                        <button className="btn ghost sm" onClick={() => maxDepth(sel.id)}>최대</button>
                       </div>
                     </div>
-                    <div className="muted xs">깊이 {Math.round(num(sel.depthStartCm, 0) + (sel.depthCount || 1) * num(selItem.d))}/{g.d}cm · 남은공간 최대 {maxFitP(selItem, sel.depthStartCm)}개</div>
+                    <div className="muted xs">깊이 {Math.round(depthStartOf(sel) + (sel.depthCount || 1) * num(selItem.d))}/{g.d}cm · 남은공간 최대 {maxFitP(selItem, depthStartOf(sel))}개</div>
                   </div>
                 )}
                 {selItem.type === "product" && (
                   <div className="depth-box">
                     <div className="depth-line"><span>회전각 (정면 기준)</span></div>
                     <div className="depth-ctrl">
-                      <button className="btn ghost sm" onClick={() => setRotation(sel.id, (sel.rotationDeg || 0) - 90)}>−90°</button>
-                      <input className="inp sm rot-input" type="number" value={sel.rotationDeg || 0} onChange={(e) => setRotation(sel.id, num(e.target.value, 0))} />
-                      <button className="btn ghost sm" onClick={() => setRotation(sel.id, (sel.rotationDeg || 0) + 90)}>+90°</button>
+                      <button className="btn ghost sm" onClick={() => bumpRotation(sel.id, -90)}>−90°</button>
+                      <input className="inp sm rot-input" type="number" value={sel.rotationDeg || 0} onChange={(e) => setRotationAbs(sel.id, num(e.target.value, 0))} />
+                      <button className="btn ghost sm" onClick={() => bumpRotation(sel.id, 90)}>+90°</button>
                     </div>
                     <div className="muted xs">0~359° 사이 숫자 입력으로 360도 자유 회전</div>
                   </div>
                 )}
-                <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤 · Delete 키로 삭제</div>
+                <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤 · Ctrl+C/V 복사·붙여넣기 · Delete 키로 삭제</div>
                 <div className="ctrl-grid">
                   <button className="btn ghost sm" onClick={() => duplicateP(sel.id)}>복제</button>
                   <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
