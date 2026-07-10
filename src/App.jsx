@@ -126,6 +126,18 @@ export default function App() {
   const goStores = () => { setView("stores"); setActiveStoreId(null); setActiveProjectId(null); };
   const goProjects = () => { setView("projects"); setActiveProjectId(null); };
 
+  const duplicateProject = (p) => {
+    const dup = { ...p, id: uid(), name: (p.name || "프로젝트") + " 사본" };
+    saveProject(dup);
+    return dup;
+  };
+  const duplicateProjectAndOpen = (p) => { const dup = duplicateProject(p); setActiveStoreId(dup.storeId); setActiveProjectId(dup.id); setView("editor"); };
+  const duplicateStore = (s) => {
+    const newStore = { ...s, id: uid(), name: (s.name || "약국") + " 사본" };
+    saveStore(newStore);
+    projects.filter((p) => p.storeId === s.id).forEach((p) => saveProject({ ...p, id: uid(), storeId: newStore.id }));
+  };
+
   return (
     <div className="vmd-root">
       <StyleTag />
@@ -144,11 +156,11 @@ export default function App() {
 
       <main className="stage">
         {!loaded && <div className="loading">불러오는 중…</div>}
-        {loaded && view === "stores" && <StoresView stores={stores} projects={projects} onSave={saveStore} onRemove={removeStore} onOpen={openStore} />}
-        {loaded && view === "projects" && activeStore && <ProjectsView store={activeStore} projects={projects.filter((p) => p.storeId === activeStore.id)} onSave={saveProject} onRemove={removeProject} onOpen={openProject} onBack={goStores} />}
+        {loaded && view === "stores" && <StoresView stores={stores} projects={projects} onSave={saveStore} onRemove={removeStore} onOpen={openStore} onDuplicate={duplicateStore} />}
+        {loaded && view === "projects" && activeStore && <ProjectsView store={activeStore} projects={projects.filter((p) => p.storeId === activeStore.id)} onSave={saveProject} onRemove={removeProject} onOpen={openProject} onDuplicate={duplicateProject} onBack={goStores} />}
         {loaded && view === "projects" && !activeStore && <div className="empty">약국을 먼저 선택하세요.</div>}
         {loaded && view === "library" && <LibraryView items={items} onSave={saveItem} onRemove={removeItem} />}
-        {loaded && view === "editor" && activeProject && <EditorView key={activeProject.id} project={activeProject} items={items} onSave={saveProject} goLibrary={() => setView("library")} goProjects={goProjects} />}
+        {loaded && view === "editor" && activeProject && <EditorView key={activeProject.id} project={activeProject} items={items} onSave={saveProject} goLibrary={() => setView("library")} goProjects={goProjects} onDuplicateProject={duplicateProjectAndOpen} />}
         {loaded && view === "editor" && !activeProject && <div className="empty">열린 프로젝트가 없음. 프로젝트 탭에서 선택.</div>}
       </main>
     </div>
@@ -199,7 +211,7 @@ function ShelfFields({ shelf, set }) {
 /* =========================================================================
    약국(거래처) 폴더 목록
    ========================================================================= */
-function StoresView({ stores, projects, onSave, onRemove, onOpen }) {
+function StoresView({ stores, projects, onSave, onRemove, onOpen, onDuplicate }) {
   const [form, setForm] = useState(null);
   const newDraft = () => ({ id: uid(), name: "", code: "", memo: "" });
 
@@ -239,6 +251,7 @@ function StoresView({ stores, projects, onSave, onRemove, onOpen }) {
               </div>
               <div className="proj-actions">
                 <button className="btn primary sm" onClick={() => onOpen(s.id)}>열기</button>
+                <button className="btn ghost sm" onClick={() => onDuplicate(s)} title="이 약국 폴더와 안의 프로젝트를 통째로 복제">복제</button>
                 <button className="btn danger-ghost sm" onClick={() => { if (confirm("이 약국 폴더와 하위 프로젝트를 모두 삭제할까요?")) onRemove(s.id); }}>삭제</button>
               </div>
             </div>
@@ -252,7 +265,7 @@ function StoresView({ stores, projects, onSave, onRemove, onOpen }) {
 /* =========================================================================
    프로젝트 목록 (약국 폴더 내부)
    ========================================================================= */
-function ProjectsView({ store, projects, onSave, onRemove, onOpen, onBack }) {
+function ProjectsView({ store, projects, onSave, onRemove, onOpen, onDuplicate, onBack }) {
   const [form, setForm] = useState(null);
   const newDraft = () => ({ id: uid(), storeId: store.id, name: "", requestDate: "", dueDate: "", memo: "", shelf: normShelf({ w: 90, d: 35, tiers: 5, uniformH: 30, boardH: 3 }), placements: [] });
 
@@ -298,6 +311,7 @@ function ProjectsView({ store, projects, onSave, onRemove, onOpen, onBack }) {
               </div>
               <div className="proj-actions">
                 <button className="btn primary sm" onClick={() => onOpen(p.id)}>편집</button>
+                <button className="btn ghost sm" onClick={() => onDuplicate(p)} title="같은 규격으로 새 프로젝트(사본) 만들기">복제</button>
                 <button className="btn danger-ghost sm" onClick={() => { if (confirm("이 프로젝트를 삭제할까요?")) onRemove(p.id); }}>삭제</button>
               </div>
             </div>
@@ -421,7 +435,7 @@ function ItemEditor({ draft, onCancel, onSave }) {
 /* =========================================================================
    에디터 (시뮬레이터)
    ========================================================================= */
-function EditorView({ project, items, onSave, goLibrary, goProjects }) {
+function EditorView({ project, items, onSave, goLibrary, goProjects, onDuplicateProject }) {
   const [meta, setMeta] = useState({ name: project.name || "", requestDate: project.requestDate || "", dueDate: project.dueDate || "", memo: project.memo || "" });
   const [shelf, setShelfRaw] = useState(normShelf(project.shelf));
   const [placements, setPlacementsRaw] = useState((project.placements || []).map((p) => ({ depthCount: 1, colCount: 1, sideXCm: 0, depthStartCm: 0, groupId: null, fitHeader: false, rotationDeg: 0, ...p })));
@@ -476,6 +490,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
   useEffect(() => { const t = setTimeout(() => onSave({ ...project, ...meta, shelf, placements }), 300); return () => clearTimeout(t); }, [shelf, placements, meta]); // eslint-disable-line
 
   const doSaveNow = () => onSave({ ...project, ...meta, shelf, placements });
+  const duplicateThisProject = () => { doSaveNow(); onDuplicateProject({ ...project, ...meta, shelf, placements }); };
 
   const groupMembers = (id, currentSel) => {
     if (currentSel.includes(id) && currentSel.length > 1) return currentSel;
@@ -962,6 +977,7 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
             <button className="btn ghost sm" disabled={!hist.canUndo()} onClick={() => hist.doUndo(curDoc(), applyDoc)} title="실행취소 (Ctrl+Z)">↶ 실행취소</button>
             <button className="btn ghost sm" disabled={!hist.canRedo()} onClick={() => hist.doRedo(curDoc(), applyDoc)} title="다시실행 (Ctrl+Shift+Z)">↷ 다시실행</button>
             <button className="btn ghost sm" onClick={doSaveNow}>저장</button>
+            <button className="btn ghost sm" onClick={duplicateThisProject} title="지금 상태 그대로 새 프로젝트(다른 버전)로 복제">다른 버전으로 복제</button>
             <button className="btn primary sm" disabled={busy} onClick={exportPng}>{busy ? "생성 중…" : "PNG 내보내기"}</button>
           </div>
         </div>
@@ -1034,10 +1050,6 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
             <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤</div>
             <div className="ctrl-grid">
               <button className="btn ghost sm" onClick={() => duplicateP(selIds)}>복제</button>
-              <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
-              <button className="btn ghost sm" onClick={() => bulkZ("down1")}>한 칸 아래</button>
-              <button className="btn ghost sm" onClick={() => bulkZ("top")}>맨 앞</button>
-              <button className="btn ghost sm" onClick={() => bulkZ("bottom")}>맨 뒤</button>
               <button className="btn ghost sm" onClick={groupSel}>그룹 묶기</button>
               <button className="btn ghost sm" onClick={ungroupSel}>그룹 해제</button>
             </div>
@@ -1092,10 +1104,6 @@ function EditorView({ project, items, onSave, goLibrary, goProjects }) {
                 <div className="hint">순서 변경: Ctrl+] 한 칸 위 · Ctrl+[ 한 칸 아래 · Ctrl+Shift+] 맨 앞 · Ctrl+Shift+[ 맨 뒤 · Ctrl+C/V 복사·붙여넣기 · Delete 키로 삭제</div>
                 <div className="ctrl-grid">
                   <button className="btn ghost sm" onClick={() => duplicateP(sel.id)}>복제</button>
-                  <button className="btn ghost sm" onClick={() => bulkZ("up1")}>한 칸 위</button>
-                  <button className="btn ghost sm" onClick={() => bulkZ("down1")}>한 칸 아래</button>
-                  <button className="btn ghost sm" onClick={() => bulkZ("top")}>맨 앞</button>
-                  <button className="btn ghost sm" onClick={() => bulkZ("bottom")}>맨 뒤</button>
                 </div>
                 <button className="btn danger-ghost sm full" onClick={() => removeP(sel.id)}>삭제</button>
               </>
